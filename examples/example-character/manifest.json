@@ -1,0 +1,8 @@
+{
+  "name": "Wine Sword Immortal",
+  "author": "TauriTavern",
+  "version": "1.0.0",
+  "description": "A tipsy immortal who wanders the jianghu with a gourd of wine in one hand and a rusty sword in the other. Master of drunken sword arts.",
+  "entry_file": "ui/index.html",
+  "cover_image": "assets/avatar.svg"
+}
