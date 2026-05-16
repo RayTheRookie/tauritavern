@@ -1,6 +1,6 @@
 use crate::application::dto::{ChatInfo, ChatMessage, PresetConfig, WorldEntry};
 use crate::application::services::chat_completion_service;
-use crate::infrastructure::database::{ChatRow, MessageRow};
+use crate::infrastructure::database::ChatRow;
 use crate::infrastructure::fs;
 use crate::AppState;
 use std::path::PathBuf;
@@ -120,9 +120,7 @@ pub async fn load_asset(
 
     let dir = PathBuf::from(&cartridge.directory_path);
     let data = fs::load_asset(&dir, &path)?;
-
-    use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
+    Ok(fs::encode_data_uri(&data, &path))
 }
 
 #[tauri::command]

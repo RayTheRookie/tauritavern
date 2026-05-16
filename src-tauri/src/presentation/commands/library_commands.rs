@@ -14,12 +14,11 @@ pub async fn list_cartridges(
 
     let mut result = Vec::new();
     for row in rows {
-        let mut cover_b64 = String::new();
+        let mut cover_uri = String::new();
         if !row.cover_image.is_empty() {
             let dir = PathBuf::from(&row.directory_path);
             if let Ok(data) = fs::load_asset(&dir, &row.cover_image) {
-                use base64::Engine;
-                cover_b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                cover_uri = fs::encode_data_uri(&data, &row.cover_image);
             }
         }
         result.push(CartridgeInfo {
@@ -28,7 +27,7 @@ pub async fn list_cartridges(
             author: row.author,
             description: row.description,
             version: row.version,
-            cover_image: cover_b64,
+            cover_image: cover_uri,
             installed_at: row.installed_at,
         });
     }
@@ -128,6 +127,5 @@ pub async fn get_cartridge_cover(
 
     let dir = PathBuf::from(&cartridge.directory_path);
     let data = fs::load_asset(&dir, &cartridge.cover_image)?;
-    use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&data))
+    Ok(fs::encode_data_uri(&data, &cartridge.cover_image))
 }

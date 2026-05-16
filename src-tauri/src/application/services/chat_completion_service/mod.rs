@@ -1,7 +1,8 @@
-use crate::application::dto::{ChatChunkPayload, ChatMessage, PresetConfig, WorldEntry};
+use crate::application::dto::{ChatChunkPayload, ChatMessage, WorldEntry};
 use crate::application::services::memory_service;
 use crate::infrastructure::apis::LlmHttpClient;
-use crate::infrastructure::database::{MessageRow, SqliteRepo};
+use crate::infrastructure::credentials::CredentialService;
+use crate::infrastructure::database::MessageRow;
 use crate::infrastructure::fs;
 use crate::AppState;
 use chrono::Utc;
@@ -80,17 +81,14 @@ pub async fn handle_chat(
         });
     }
 
-    // Truncate
-    let max_tokens = preset.max_tokens.unwrap_or(8192);
-    messages = memory_service::truncate_messages(&messages, max_tokens, "gpt-4");
+    // Truncate using context_window_size (separate from max_tokens which controls output)
+    let context_budget = preset.context_window_size.unwrap_or(8192);
+    let model_name = preset.model.as_deref().unwrap_or("gpt-4");
+    messages = memory_service::truncate_messages(&messages, context_budget, model_name);
 
-    // Get API key
+    // Get API key from OS credential store
     let provider = preset.provider.clone().unwrap_or_else(|| "openai".to_string());
-    let api_key = state
-        .repo
-        .get_setting(&format!("api_key_{}", provider))
-        .await
-        .map_err(|e| e.to_string())?
+    let api_key = CredentialService::get(&provider)?
         .ok_or_else(|| format!("API key not set for provider '{}'", provider))?;
 
     // Stream from LLM

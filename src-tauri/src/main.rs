@@ -6,8 +6,8 @@ mod presentation;
 use app_state::AppState;
 use infrastructure::database::SqliteRepo;
 use std::path::PathBuf;
+use url::Url;
 
-use tauri::Manager;
 use tauri_plugin_dialog;
 
 #[tokio::main]
@@ -29,6 +29,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&db_url)
         .await?;
 
+    // Enable foreign key enforcement (SQLite disables it by default)
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await?;
+
     // Run migrations
     infrastructure::database::run_migrations(&pool).await?;
 
@@ -41,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .plugin(tauri_plugin_dialog::init())
         .manage(app_state)
         .register_uri_scheme_protocol("tavern", move |_app, request| {
-            handle_tavern_protocol(request, &protocol_data_dir)
+            handle_tavern_protocol(&request, &protocol_data_dir)
         })
         .invoke_handler(tauri::generate_handler![
             presentation::commands::library_commands::list_cartridges,
@@ -90,32 +95,35 @@ fn resolve_data_dir() -> PathBuf {
     PathBuf::from("user_data")
 }
 
+/// SDK content baked into the binary at compile time — never missing at runtime.
+const SDK_CONTENT: &str = include_str!("../../tauri-tavern-sdk.js");
+
 fn handle_tavern_protocol(
     request: &tauri::http::Request<Vec<u8>>,
     data_dir: &PathBuf,
 ) -> tauri::http::Response<Vec<u8>> {
+    // Parse URI properly — handles both tavern://localhost/path and http://tavern.localhost/path
     let uri = request.uri().to_string();
-    let path = uri.strip_prefix("tavern://localhost/").unwrap_or("");
-
-    // SDK endpoint
-    if path.starts_with("sdk/") {
-        let sdk_paths = [
-            PathBuf::from("tauri-tavern-sdk.js"),
-            PathBuf::from("../tauri-tavern-sdk.js"),
-        ];
-        for sdk_path in &sdk_paths {
-            if let Ok(data) = std::fs::read(sdk_path) {
-                return tauri::http::Response::builder()
-                    .status(200)
-                    .header("Content-Type", "application/javascript")
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(data)
-                    .unwrap();
-            }
+    let url = match Url::parse(&uri) {
+        Ok(u) => u,
+        Err(_) => {
+            return tauri::http::Response::builder()
+                .status(400)
+                .body(b"Invalid URL".to_vec())
+                .unwrap();
         }
+    };
+
+    let path = url.path();
+    let path = path.trim_start_matches('/');
+
+    // SDK endpoint — served from compile-time embedded content
+    if path.starts_with("sdk/") || path == "sdk" || path == "tauri-tavern-sdk.js" {
         return tauri::http::Response::builder()
-            .status(404)
-            .body(b"SDK not found".to_vec())
+            .status(200)
+            .header("Content-Type", "application/javascript")
+            .header("Access-Control-Allow-Origin", "*")
+            .body(SDK_CONTENT.as_bytes().to_vec())
             .unwrap();
     }
 

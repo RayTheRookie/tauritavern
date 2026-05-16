@@ -11,7 +11,10 @@ pub struct PresetConfig {
     pub system_prompt: String,
     pub model: Option<String>,
     pub temperature: Option<f64>,
+    /// Maximum tokens for the LLM completion (output). Defaults to 4096.
     pub max_tokens: Option<usize>,
+    /// Context window size for truncating history (input budget). Defaults to 8192.
+    pub context_window_size: Option<usize>,
     pub provider: Option<String>,
     pub provider_url: Option<String>,
 }
@@ -73,10 +76,4 @@ pub struct ChatChunkPayload {
     pub done: bool,
     #[serde(default)]
     pub error: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ErrorPayload {
-    pub message: String,
-    pub chat_id: Option<String>,
 }

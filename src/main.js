@@ -103,11 +103,17 @@ async function handleDeleteCartridge(id, name) {
 async function loadApiKeys() {
   try {
     const keys = await invoke("get_all_api_keys");
-    for (const { key, value } of keys) {
+    for (const { key, value, has_key: hasKey } of keys) {
       const provider = key.replace("api_key_", "");
       const input = document.getElementById(`api-key-${provider}`);
       if (input) {
-        input.value = value;
+        if (hasKey && value) {
+          input.value = value;
+          input.placeholder = "Key saved (masked)";
+        } else {
+          input.value = "";
+          input.placeholder = input.dataset.placeholder || "";
+        }
       }
     }
   } catch (e) {
@@ -133,7 +139,7 @@ function renderGrid() {
     <div class="card" data-id="${c.id}">
       ${
         c.cover_image
-          ? `<img class="card-cover" src="data:image/png;base64,${c.cover_image}" alt="${c.name}" />`
+          ? `<img class="card-cover" src="${c.cover_image}" alt="${c.name}" />`
           : `<div class="card-cover-placeholder">&#128214;</div>`
       }
       <div class="card-body">

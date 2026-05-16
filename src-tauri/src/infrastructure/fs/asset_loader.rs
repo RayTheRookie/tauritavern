@@ -1,5 +1,37 @@
 use crate::application::dto::{Manifest, PresetConfig, WorldEntry};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+pub fn guess_mime(path: &str) -> &'static str {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "html" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Encodes raw bytes into a `data:` URI string with the correct MIME type.
+pub fn encode_data_uri(data: &[u8], path: &str) -> String {
+    use base64::Engine;
+    let mime = guess_mime(path);
+    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+    format!("data:{};base64,{}", mime, b64)
+}
 
 pub fn load_asset(cartridge_dir: &Path, relative_path: &str) -> Result<Vec<u8>, String> {
     let resolved = cartridge_dir.join(relative_path);
@@ -41,8 +73,4 @@ pub fn load_world_info(cartridge_dir: &Path) -> Result<Vec<WorldEntry>, String> 
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read world_info.json: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Invalid world_info.json: {}", e))
-}
-
-pub fn resolve_cartridge_dir(data_dir: &Path, cartridge_id: &str) -> PathBuf {
-    data_dir.join("cartridges").join(cartridge_id)
 }

@@ -138,6 +138,15 @@
       const listen = getListen();
       const cartridgeId = getCartridgeIdFromUrl();
 
+      let unlistened = false;
+
+      const doUnlisten = () => {
+        if (!unlistened) {
+          unlistened = true;
+          unlisten();
+        }
+      };
+
       // Set up the event listener before sending
       const unlisten = await listen("chat-chunk", (event) => {
         const payload = event.payload;
@@ -147,13 +156,13 @@
 
         if (payload.error) {
           if (onError) onError(payload.content);
-          unlisten();
+          doUnlisten();
           return;
         }
 
         if (payload.done) {
           if (onDone) onDone();
-          unlisten();
+          doUnlisten();
           return;
         }
 
@@ -167,7 +176,7 @@
           message,
         });
       } catch (e) {
-        unlisten();
+        doUnlisten();
         if (onError) onError(String(e));
       }
     },
@@ -191,28 +200,12 @@
     async loadAsset(assetPath) {
       const invoke = getInvoke();
       const cartridgeId = getCartridgeIdFromUrl();
-      const base64 = await invoke("load_asset", {
+      const result = await invoke("load_asset", {
         cartridgeId,
         path: assetPath,
       });
-
-      // Guess MIME type from extension
-      const ext = assetPath.split(".").pop().toLowerCase();
-      const mimeTypes = {
-        png: "image/png",
-        jpg: "image/jpeg",
-        jpeg: "image/jpeg",
-        gif: "image/gif",
-        webp: "image/webp",
-        svg: "image/svg+xml",
-        mp3: "audio/mpeg",
-        wav: "audio/wav",
-        ogg: "audio/ogg",
-        mp4: "video/mp4",
-        webm: "video/webm",
-      };
-      const mime = mimeTypes[ext] || "application/octet-stream";
-      return `data:${mime};base64,${base64}`;
+      // Backend now returns a full data: URI — use directly
+      return result;
     },
 
     /**

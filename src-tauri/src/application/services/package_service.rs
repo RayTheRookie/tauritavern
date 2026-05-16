@@ -1,7 +1,7 @@
-use crate::application::dto::{CartridgeInfo, Manifest};
+use crate::application::dto::CartridgeInfo;
 use crate::infrastructure::database::{CartridgeRow, SqliteRepo};
 use crate::infrastructure::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use uuid::Uuid;
 use zip::ZipArchive;
 
@@ -93,11 +93,10 @@ pub async fn import_cartridge(
         .map_err(|e| format!("Database error: {}", e))?;
 
     // Read cover image if present
-    let mut cover_b64 = String::new();
+    let mut cover_uri = String::new();
     if !entry_file.cover_image.is_empty() {
         if let Ok(data) = fs::load_asset(&dest_dir, &entry_file.cover_image) {
-            use base64::Engine;
-            cover_b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            cover_uri = fs::encode_data_uri(&data, &entry_file.cover_image);
         }
     }
 
@@ -107,31 +106,16 @@ pub async fn import_cartridge(
         author: entry_file.author,
         description: entry_file.description,
         version: entry_file.version,
-        cover_image: cover_b64,
+        cover_image: cover_uri,
         installed_at: now,
     })
 }
 
+/// SDK content baked into the binary at compile time.
+const SDK_CONTENT: &str = include_str!("../../../../tauri-tavern-sdk.js");
+
 fn copy_sdk_to_cartridge(cartridge_dir: &Path) -> Result<(), String> {
-    // Look for the SDK file relative to the executable
-    let sdk_paths = [
-        PathBuf::from("tauri-tavern-sdk.js"),
-        PathBuf::from("../tauri-tavern-sdk.js"),
-    ];
-
-    let mut sdk_content = None;
-    for p in &sdk_paths {
-        if let Ok(content) = std::fs::read_to_string(p) {
-            sdk_content = Some(content);
-            break;
-        }
-    }
-
-    if let Some(content) = sdk_content {
-        let dest = cartridge_dir.join("tauri-tavern-sdk.js");
-        std::fs::write(&dest, content)
-            .map_err(|e| format!("Failed to copy SDK: {}", e))?;
-    }
-
+    let dest = cartridge_dir.join("tauri-tavern-sdk.js");
+    std::fs::write(&dest, SDK_CONTENT).map_err(|e| format!("Failed to copy SDK: {}", e))?;
     Ok(())
 }

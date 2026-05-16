@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct CartridgeRow {
     pub id: String,
     pub name: String,
@@ -14,7 +14,7 @@ pub struct CartridgeRow {
     pub directory_path: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct ChatRow {
     pub id: String,
     pub cartridge_id: String,
@@ -23,7 +23,7 @@ pub struct ChatRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct MessageRow {
     pub id: String,
     pub chat_id: String,
@@ -40,10 +40,6 @@ pub struct SqliteRepo {
 impl SqliteRepo {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
-    }
-
-    pub fn pool(&self) -> &SqlitePool {
-        &self.pool
     }
 
     // ── Cartridges ──────────────────────────────────────────────
@@ -85,6 +81,15 @@ impl SqliteRepo {
     }
 
     pub async fn delete_cartridge(&self, id: &str) -> Result<(), sqlx::Error> {
+        // Manual cascade: delete messages → chats → cartridge
+        sqlx::query("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE cartridge_id = ?)")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM chats WHERE cartridge_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         sqlx::query("DELETE FROM cartridges WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -117,32 +122,12 @@ impl SqliteRepo {
         .await
     }
 
-    pub async fn get_chat(&self, id: &str) -> Result<Option<ChatRow>, sqlx::Error> {
-        sqlx::query_as::<_, ChatRow>(
-            "SELECT id, cartridge_id, title, created_at, updated_at FROM chats WHERE id = ?",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-    }
-
     pub async fn delete_chat(&self, id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM chats WHERE id = ?")
+        sqlx::query("DELETE FROM messages WHERE chat_id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
-        Ok(())
-    }
-
-    pub async fn update_chat_title(
-        &self,
-        id: &str,
-        title: &str,
-        updated_at: &str,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE chats SET title = ?, updated_at = ? WHERE id = ?")
-            .bind(title)
-            .bind(updated_at)
+        sqlx::query("DELETE FROM chats WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -188,47 +173,4 @@ impl SqliteRepo {
         .await
     }
 
-    pub async fn delete_messages_by_chat(&self, chat_id: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM messages WHERE chat_id = ?")
-            .bind(chat_id)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    // ── Settings ────────────────────────────────────────────────
-
-    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
-            .bind(key)
-            .fetch_optional(&self.pool)
-            .await
-    }
-
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn delete_setting(&self, key: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM settings WHERE key = ?")
-            .bind(key)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn get_all_api_keys(&self) -> Result<Vec<(String, String)>, sqlx::Error> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT key, value FROM settings WHERE key LIKE 'api_key_%'",
-        )
-        .fetch_all(&self.pool)
-        .await
-    }
 }

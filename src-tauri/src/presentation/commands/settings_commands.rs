@@ -1,61 +1,39 @@
-use crate::AppState;
+use crate::infrastructure::credentials::CredentialService;
 
 #[tauri::command]
-pub async fn get_api_key(
-    state: tauri::State<'_, AppState>,
-    provider: String,
-) -> Result<String, String> {
-    state
-        .repo
-        .get_setting(&format!("api_key_{}", provider))
-        .await
-        .map_err(|e| e.to_string())
-        .map(|v| v.unwrap_or_default())
+pub async fn get_api_key(provider: String) -> Result<Option<String>, String> {
+    CredentialService::get_masked(&provider)
 }
 
 #[tauri::command]
-pub async fn set_api_key(
-    state: tauri::State<'_, AppState>,
-    provider: String,
-    key: String,
-) -> Result<(), String> {
-    state
-        .repo
-        .set_setting(&format!("api_key_{}", provider), &key)
-        .await
-        .map_err(|e| e.to_string())
+pub async fn set_api_key(provider: String, key: String) -> Result<(), String> {
+    CredentialService::store(&provider, &key)
 }
 
 #[tauri::command]
-pub async fn delete_api_key(
-    state: tauri::State<'_, AppState>,
-    provider: String,
-) -> Result<(), String> {
-    state
-        .repo
-        .delete_setting(&format!("api_key_{}", provider))
-        .await
-        .map_err(|e| e.to_string())
+pub async fn delete_api_key(provider: String) -> Result<(), String> {
+    CredentialService::delete(&provider)
 }
 
 #[derive(serde::Serialize)]
 pub struct SettingEntry {
     pub key: String,
-    pub value: String,
+    pub value: Option<String>,
+    pub has_key: bool,
 }
 
 #[tauri::command]
-pub async fn get_all_api_keys(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<SettingEntry>, String> {
-    let rows = state
-        .repo
-        .get_all_api_keys()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(rows
-        .into_iter()
-        .map(|(key, value)| SettingEntry { key, value })
-        .collect())
+pub async fn get_all_api_keys() -> Result<Vec<SettingEntry>, String> {
+    let providers = vec!["openai", "anthropic"];
+    let mut entries = Vec::new();
+    for provider in providers {
+        let masked = CredentialService::get_masked(provider)?;
+        let has_key = masked.is_some();
+        entries.push(SettingEntry {
+            key: format!("api_key_{}", provider),
+            value: masked,
+            has_key,
+        });
+    }
+    Ok(entries)
 }

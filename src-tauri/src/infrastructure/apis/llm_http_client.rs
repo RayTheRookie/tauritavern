@@ -64,6 +64,7 @@ impl LlmHttpClient {
         });
 
         let (mut tx, rx) = mpsc::channel::<Result<String, String>>(64);
+        let api_key = api_key.to_string();
 
         tokio::spawn(async move {
             let result = client
@@ -92,15 +93,21 @@ impl LlmHttpClient {
             }
 
             let mut byte_stream = response.bytes_stream();
-            let mut buffer = String::new();
+            let mut buffer: Vec<u8> = Vec::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        buffer.push_str(&String::from_utf8_lossy(&chunk));
-                        while let Some(pos) = buffer.find('\n') {
-                            let line = buffer[..pos].trim().to_string();
-                            buffer = buffer[pos + 1..].to_string();
+                        buffer.extend_from_slice(&chunk);
+
+                        while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                            let line_bytes = &buffer[..pos];
+                            let rest = buffer[pos + 1..].to_vec();
+
+                            // Only decode complete lines as UTF-8
+                            let line = String::from_utf8_lossy(line_bytes);
+                            let line = line.trim().to_string();
+                            buffer = rest;
 
                             if line.is_empty() {
                                 continue;
@@ -132,6 +139,21 @@ impl LlmHttpClient {
                 }
             }
 
+            // Flush any remaining bytes in buffer as a last line
+            if !buffer.is_empty() {
+                let line = String::from_utf8_lossy(&buffer).trim().to_string();
+                if !line.is_empty() {
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        if let Ok(parsed) = serde_json::from_str::<Value>(data) {
+                            if let Some(content) = parsed["choices"][0]["delta"]["content"].as_str()
+                            {
+                                tx.send(Ok(content.to_string())).await.ok();
+                            }
+                        }
+                    }
+                }
+            }
+
             tx.close_channel();
         });
 
@@ -153,7 +175,6 @@ impl LlmHttpClient {
             .clone()
             .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
 
-        // Separate system messages from conversation
         let system_prompt = messages
             .iter()
             .filter(|m| m.role == "system")
@@ -185,6 +206,7 @@ impl LlmHttpClient {
         }
 
         let (mut tx, rx) = mpsc::channel::<Result<String, String>>(64);
+        let api_key = api_key.to_string();
 
         tokio::spawn(async move {
             let result = client
@@ -214,15 +236,20 @@ impl LlmHttpClient {
             }
 
             let mut byte_stream = response.bytes_stream();
-            let mut buffer = String::new();
+            let mut buffer: Vec<u8> = Vec::new();
 
             while let Some(chunk_result) = byte_stream.next().await {
                 match chunk_result {
                     Ok(chunk) => {
-                        buffer.push_str(&String::from_utf8_lossy(&chunk));
-                        while let Some(pos) = buffer.find('\n') {
-                            let line = buffer[..pos].trim().to_string();
-                            buffer = buffer[pos + 1..].to_string();
+                        buffer.extend_from_slice(&chunk);
+
+                        while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+                            let line_bytes = &buffer[..pos];
+                            let rest = buffer[pos + 1..].to_vec();
+
+                            let line = String::from_utf8_lossy(line_bytes);
+                            let line = line.trim().to_string();
+                            buffer = rest;
 
                             if line.is_empty() {
                                 continue;
@@ -231,9 +258,7 @@ impl LlmHttpClient {
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if let Ok(parsed) = serde_json::from_str::<Value>(data) {
                                     if parsed["type"] == "content_block_delta" {
-                                        if let Some(text) =
-                                            parsed["delta"]["text"].as_str()
-                                        {
+                                        if let Some(text) = parsed["delta"]["text"].as_str() {
                                             if tx.send(Ok(text.to_string())).await.is_err() {
                                                 return;
                                             }
