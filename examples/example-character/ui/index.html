@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Wine Sword Immortal</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="../tauri-tavern-sdk.js"></script>
+  <script defer src="script.js"></script>
+</head>
+<body>
+  <div class="chat-container">
+    <header class="chat-header">
+      <div class="char-avatar">&#127867;</div>
+      <div class="char-info">
+        <h1>Wine Sword Immortal</h1>
+        <span class="char-subtitle">Master of Drunken Sword Arts</span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-new-chat" class="btn-icon" title="New Chat">+</button>
+      </div>
+    </header>
+
+    <div id="chat-list-panel" class="chat-list-panel hidden">
+      <div class="chat-list-header">
+        <h3>Chats</h3>
+        <button id="btn-close-chat-list" class="btn-icon">&times;</button>
+      </div>
+      <div id="chat-list" class="chat-list"></div>
+    </div>
+
+    <main id="message-area" class="message-area">
+      <div class="welcome-message">
+        <div class="welcome-avatar">&#127867;</div>
+        <p>The Wine Sword Immortal staggers toward you,</p>
+        <p>a gourd of wine sloshing at his hip.</p>
+        <p><em>"Come, kid. Sit. Drink. Tell old master your troubles."</em></p>
+      </div>
+    </main>
+
+    <div class="input-area">
+      <textarea
+        id="message-input"
+        placeholder="Speak your mind, kid..."
+        rows="1"
+        autofocus
+      ></textarea>
+      <button id="btn-send" class="btn-send" title="Send">&#10148;</button>
+    </div>
+
+    <div id="streaming-indicator" class="streaming-indicator hidden">
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+      <span class="typing-dot"></span>
+    </div>
+  </div>
+</body>
+</html>
