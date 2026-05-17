@@ -32,3 +32,23 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rag_memories (
+    id TEXT PRIMARY KEY,
+    cartridge_id TEXT NOT NULL,
+    chat_id TEXT,
+    message_id TEXT,
+    source_type TEXT NOT NULL CHECK(source_type IN ('turn', 'world_info')),
+    source_id TEXT,
+    content TEXT NOT NULL,
+    vector_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (cartridge_id) REFERENCES cartridges(id) ON DELETE CASCADE,
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_memories_cartridge_source
+    ON rag_memories(cartridge_id, source_type);
+
+CREATE INDEX IF NOT EXISTS idx_rag_memories_chat
+    ON rag_memories(chat_id);

@@ -1,5 +1,5 @@
-use crate::application::dto::{ChatChunkPayload, ChatMessage, WorldEntry};
-use crate::application::services::memory_service;
+use crate::application::dto::{ChatChunkPayload, PromptDryRunResult};
+use crate::application::services::prompt_engine;
 use crate::infrastructure::apis::LlmHttpClient;
 use crate::infrastructure::credentials::CredentialService;
 use crate::infrastructure::database::MessageRow;
@@ -51,43 +51,24 @@ pub async fn handle_chat(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Load history
-    let history = state
-        .repo
-        .get_messages_by_chat(chat_id, 50)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // Load and match world info
-    let world_entries = fs::load_world_info(&dir).unwrap_or_default();
-    let matched_entries = match_world_entries(&world_entries, user_message);
-
-    // Build messages: system prompt + world entries + history (user message already saved)
-    let mut messages: Vec<ChatMessage> = Vec::new();
-    messages.push(ChatMessage {
-        role: "system".to_string(),
-        content: preset.system_prompt.clone(),
-    });
-    for entry in &matched_entries {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: entry.content.clone(),
-        });
-    }
-    for msg in &history {
-        messages.push(ChatMessage {
-            role: msg.role.clone(),
-            content: msg.content.clone(),
-        });
-    }
-
-    // Truncate using context_window_size (separate from max_tokens which controls output)
-    let context_budget = preset.context_window_size.unwrap_or(8192);
-    let model_name = preset.model.as_deref().unwrap_or("gpt-4");
-    messages = memory_service::truncate_messages(&messages, context_budget, model_name);
+    let rendered = prompt_engine::render_prompt(
+        &state.repo,
+        cartridge_id,
+        chat_id,
+        &dir,
+        &preset,
+        &cartridge.name,
+        user_message,
+        None,
+    )
+    .await?;
+    let messages = rendered.messages;
 
     // Get API key from OS credential store
-    let provider = preset.provider.clone().unwrap_or_else(|| "openai".to_string());
+    let provider = preset
+        .provider
+        .clone()
+        .unwrap_or_else(|| "openai".to_string());
     let api_key = CredentialService::get(&provider)?
         .ok_or_else(|| format!("API key not set for provider '{}'", provider))?;
 
@@ -132,14 +113,23 @@ pub async fn handle_chat(
     state
         .repo
         .insert_message(&MessageRow {
-            id: response_msg_id,
+            id: response_msg_id.clone(),
             chat_id: chat_id.to_string(),
             role: "assistant".to_string(),
-            content: full_response,
+            content: full_response.clone(),
             created_at: response_ts,
         })
         .await
         .map_err(|e| e.to_string())?;
+
+    prompt_engine::spawn_turn_index(
+        state.repo.clone(),
+        cartridge_id.to_string(),
+        chat_id.to_string(),
+        response_msg_id,
+        user_message.to_string(),
+        full_response,
+    );
 
     // Emit done
     let _ = window.emit(
@@ -155,16 +145,34 @@ pub async fn handle_chat(
     Ok(())
 }
 
-fn match_world_entries(entries: &[WorldEntry], message: &str) -> Vec<WorldEntry> {
-    let lower_msg = message.to_lowercase();
-    entries
-        .iter()
-        .filter(|entry| {
-            entry
-                .keys
-                .iter()
-                .any(|key| lower_msg.contains(&key.to_lowercase()))
-        })
-        .cloned()
-        .collect()
+pub async fn dry_run_prompt_pipeline(
+    state: &AppState,
+    cartridge_id: &str,
+    chat_id: Option<&str>,
+    user_message: &str,
+) -> Result<PromptDryRunResult, String> {
+    let cartridge = state
+        .repo
+        .get_cartridge(cartridge_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Cartridge not found".to_string())?;
+
+    let dir = std::path::PathBuf::from(&cartridge.directory_path);
+    let preset = fs::load_preset(&dir)?;
+    let render_chat_id = chat_id.unwrap_or("__dry_run_chat__");
+
+    let rendered = prompt_engine::render_prompt(
+        &state.repo,
+        cartridge_id,
+        render_chat_id,
+        &dir,
+        &preset,
+        &cartridge.name,
+        user_message,
+        Some(user_message.to_string()),
+    )
+    .await?;
+
+    Ok(rendered.dry_run)
 }

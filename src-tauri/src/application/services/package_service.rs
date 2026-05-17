@@ -1,4 +1,5 @@
 use crate::application::dto::CartridgeInfo;
+use crate::application::services::prompt_engine;
 use crate::infrastructure::database::{CartridgeRow, SqliteRepo};
 use crate::infrastructure::fs;
 use std::path::Path;
@@ -10,8 +11,7 @@ pub async fn import_cartridge(
     file_path: &str,
     data_dir: &Path,
 ) -> Result<CartridgeInfo, String> {
-    let file = std::fs::File::open(file_path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let file = std::fs::File::open(file_path).map_err(|e| format!("Failed to open file: {}", e))?;
 
     let mut archive =
         ZipArchive::new(file).map_err(|e| format!("Failed to read .taurichar archive: {}", e))?;
@@ -91,6 +91,8 @@ pub async fn import_cartridge(
     repo.insert_cartridge(&row)
         .await
         .map_err(|e| format!("Database error: {}", e))?;
+
+    prompt_engine::spawn_static_world_index(repo.clone(), cartridge_id.clone(), dest_dir.clone());
 
     // Read cover image if present
     let mut cover_uri = String::new();

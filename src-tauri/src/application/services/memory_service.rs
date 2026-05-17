@@ -32,6 +32,7 @@ fn char_based_count(text: &str) -> usize {
     (text.chars().count() as f64 / 3.0).ceil() as usize
 }
 
+#[allow(dead_code)]
 /// Truncates conversation history to fit within `budget_tokens`.
 ///
 /// Guarantees:
@@ -48,10 +49,8 @@ pub fn truncate_messages(
         return vec![];
     }
 
-    let system_msgs: Vec<&ChatMessage> =
-        messages.iter().filter(|m| m.role == "system").collect();
-    let conversation: Vec<&ChatMessage> =
-        messages.iter().filter(|m| m.role != "system").collect();
+    let system_msgs: Vec<&ChatMessage> = messages.iter().filter(|m| m.role == "system").collect();
+    let conversation: Vec<&ChatMessage> = messages.iter().filter(|m| m.role != "system").collect();
 
     let system_tokens: usize = system_msgs
         .iter()
@@ -188,9 +187,9 @@ mod tests {
         // First non-system message should be user
         assert_eq!(non_system[0].role, "user");
         // "A2" should NOT appear without its user "x...x"
-        let has_orphaned = non_system.windows(2).any(|w| {
-            w[0].role == "assistant" && w[1].role == "assistant"
-        });
+        let has_orphaned = non_system
+            .windows(2)
+            .any(|w| w[0].role == "assistant" && w[1].role == "assistant");
         assert!(!has_orphaned);
     }
 

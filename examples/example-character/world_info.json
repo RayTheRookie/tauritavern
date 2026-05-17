@@ -1,17 +1,31 @@
-[
-  {
-    "keys": ["wine", "酒", "drink", "alcohol"],
-    "content": "[The Wine Sword Immortal takes a long swig from his gourd. His eyes sparkle with ancient wisdom.]",
-    "secondary_keys": ["gourd", "drunk"]
-  },
-  {
-    "keys": ["sword", "剑", "blade", "technique"],
-    "content": "[The immortal's rusty sword hums faintly, resonating with centuries of martial mastery.]",
-    "secondary_keys": ["fight", "battle", "combat"]
-  },
-  {
-    "keys": ["mountain", "山", "cloud", "heaven"],
-    "content": "[A memory flickers in his eyes — of peaks above the clouds, and a celestial wine cellar.]",
-    "secondary_keys": ["immortal", "cultivate", "dao"]
-  }
-]
+{
+  "entries": [
+    {
+      "id": "wine_lore",
+      "keys": ["wine", "酒", "drink", "alcohol"],
+      "content": "[The Wine Sword Immortal takes a long swig from his gourd. His eyes sparkle with ancient wisdom.]",
+      "secondary_keys": ["gourd", "drunk"],
+      "enable_semantic_search": true,
+      "insertion_depth": 0,
+      "role": "system"
+    },
+    {
+      "id": "sword_lore",
+      "keys": ["sword", "剑", "blade", "technique"],
+      "content": "[The immortal's rusty sword hums faintly, resonating with centuries of martial mastery.]",
+      "secondary_keys": ["fight", "battle", "combat"],
+      "enable_semantic_search": true,
+      "insertion_depth": 2,
+      "role": "system"
+    },
+    {
+      "id": "mountain_lore",
+      "keys": ["mountain", "山", "cloud", "heaven"],
+      "content": "[A memory flickers in his eyes: peaks above the clouds, and a celestial wine cellar.]",
+      "secondary_keys": ["immortal", "cultivate", "dao"],
+      "enable_semantic_search": true,
+      "insertion_depth": 0,
+      "role": "system"
+    }
+  ]
+}

@@ -17,13 +17,44 @@ impl LlmHttpClient {
         }
     }
 
+    pub fn build_payload_preview(preset: &PresetConfig, messages: &[ChatMessage]) -> Value {
+        let provider = preset
+            .provider
+            .clone()
+            .unwrap_or_else(|| "openai".to_string());
+        match provider.as_str() {
+            "anthropic" => Self::build_anthropic_body(preset, messages, true),
+            _ => Self::build_openai_compatible_body(preset, messages, true),
+        }
+    }
+
+    pub fn serialize_messages_for_debug(preset: &PresetConfig, messages: &[ChatMessage]) -> String {
+        if preset
+            .chat_format
+            .as_deref()
+            .unwrap_or("chatml")
+            .eq_ignore_ascii_case("alpaca")
+        {
+            return serialize_alpaca(messages);
+        }
+
+        messages
+            .iter()
+            .map(|m| format!("<|{}|>\n{}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
     pub fn stream_chat(
         &self,
         preset: &PresetConfig,
         messages: &[ChatMessage],
         api_key: &str,
     ) -> ChunkStream {
-        let provider = preset.provider.clone().unwrap_or_else(|| "openai".to_string());
+        let provider = preset
+            .provider
+            .clone()
+            .unwrap_or_else(|| "openai".to_string());
         match provider.as_str() {
             "anthropic" => self.stream_anthropic(preset, messages, api_key),
             _ => self.stream_openai_compatible(preset, messages, api_key),
@@ -37,31 +68,11 @@ impl LlmHttpClient {
         api_key: &str,
     ) -> ChunkStream {
         let client = self.client.clone();
-        let model = preset.model.clone().unwrap_or_else(|| "gpt-4o".to_string());
-        let temperature = preset.temperature.unwrap_or(0.7);
-        let max_tokens = preset.max_tokens.unwrap_or(4096);
         let url = preset
             .provider_url
             .clone()
             .unwrap_or_else(|| "https://api.openai.com/v1/chat/completions".to_string());
-
-        let msgs: Vec<Value> = messages
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                })
-            })
-            .collect();
-
-        let body = serde_json::json!({
-            "model": model,
-            "messages": msgs,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": true,
-        });
+        let body = Self::build_openai_compatible_body(preset, messages, true);
 
         let (mut tx, rx) = mpsc::channel::<Result<String, String>>(64);
         let api_key = api_key.to_string();
@@ -87,7 +98,9 @@ impl LlmHttpClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
-                tx.send(Err(format!("HTTP {}: {}", status, text))).await.ok();
+                tx.send(Err(format!("HTTP {}: {}", status, text)))
+                    .await
+                    .ok();
                 tx.close_channel();
                 return;
             }
@@ -120,8 +133,8 @@ impl LlmHttpClient {
 
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if let Ok(parsed) = serde_json::from_str::<Value>(data) {
-                                    if let Some(content) = parsed["choices"][0]["delta"]["content"]
-                                        .as_str()
+                                    if let Some(content) =
+                                        parsed["choices"][0]["delta"]["content"].as_str()
                                     {
                                         if tx.send(Ok(content.to_string())).await.is_err() {
                                             return;
@@ -167,43 +180,11 @@ impl LlmHttpClient {
         api_key: &str,
     ) -> ChunkStream {
         let client = self.client.clone();
-        let model = preset.model.clone().unwrap_or_else(|| "claude-sonnet-4-6".to_string());
-        let temperature = preset.temperature.unwrap_or(0.7);
-        let max_tokens = preset.max_tokens.unwrap_or(4096);
         let url = preset
             .provider_url
             .clone()
             .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
-
-        let system_prompt = messages
-            .iter()
-            .filter(|m| m.role == "system")
-            .map(|m| m.content.clone())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let conversation: Vec<Value> = messages
-            .iter()
-            .filter(|m| m.role != "system")
-            .map(|m| {
-                serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                })
-            })
-            .collect();
-
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": conversation,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": true,
-        });
-
-        if !system_prompt.is_empty() {
-            body["system"] = serde_json::json!(system_prompt);
-        }
+        let body = Self::build_anthropic_body(preset, messages, true);
 
         let (mut tx, rx) = mpsc::channel::<Result<String, String>>(64);
         let api_key = api_key.to_string();
@@ -230,7 +211,9 @@ impl LlmHttpClient {
             if !response.status().is_success() {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
-                tx.send(Err(format!("HTTP {}: {}", status, text))).await.ok();
+                tx.send(Err(format!("HTTP {}: {}", status, text)))
+                    .await
+                    .ok();
                 tx.close_channel();
                 return;
             }
@@ -284,5 +267,120 @@ impl LlmHttpClient {
         });
 
         Box::pin(rx)
+    }
+
+    fn build_openai_compatible_body(
+        preset: &PresetConfig,
+        messages: &[ChatMessage],
+        stream: bool,
+    ) -> Value {
+        let model = preset.model.clone().unwrap_or_else(|| "gpt-4o".to_string());
+        let temperature = preset.temperature.unwrap_or(0.7);
+        let max_tokens = preset.max_tokens.unwrap_or(4096);
+        let msgs = openai_messages_for_format(preset, messages);
+
+        serde_json::json!({
+            "model": model,
+            "messages": msgs,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        })
+    }
+
+    fn build_anthropic_body(
+        preset: &PresetConfig,
+        messages: &[ChatMessage],
+        stream: bool,
+    ) -> Value {
+        let model = preset
+            .model
+            .clone()
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+        let temperature = preset.temperature.unwrap_or(0.7);
+        let max_tokens = preset.max_tokens.unwrap_or(4096);
+
+        let system_prompt = messages
+            .iter()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let conversation: Vec<Value> = messages
+            .iter()
+            .filter(|m| m.role != "system")
+            .map(|m| {
+                serde_json::json!({
+                    "role": m.role,
+                    "content": m.content,
+                })
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": model,
+            "messages": conversation,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+        });
+
+        if !system_prompt.is_empty() {
+            body["system"] = serde_json::json!(system_prompt);
+        }
+
+        body
+    }
+}
+
+fn openai_messages_for_format(preset: &PresetConfig, messages: &[ChatMessage]) -> Vec<Value> {
+    if preset
+        .chat_format
+        .as_deref()
+        .unwrap_or("chatml")
+        .eq_ignore_ascii_case("alpaca")
+    {
+        return vec![serde_json::json!({
+            "role": "user",
+            "content": serialize_alpaca(messages),
+        })];
+    }
+
+    messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        })
+        .collect()
+}
+
+fn serialize_alpaca(messages: &[ChatMessage]) -> String {
+    let system = messages
+        .iter()
+        .filter(|m| m.role == "system")
+        .map(|m| m.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let conversation = messages
+        .iter()
+        .filter(|m| m.role != "system")
+        .map(|m| match m.role.as_str() {
+            "assistant" => format!("### Response:\n{}", m.content),
+            _ => format!("### Instruction:\n{}", m.content),
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if system.is_empty() {
+        conversation
+    } else if conversation.is_empty() {
+        format!("### System:\n{}", system)
+    } else {
+        format!("### System:\n{}\n\n{}", system, conversation)
     }
 }

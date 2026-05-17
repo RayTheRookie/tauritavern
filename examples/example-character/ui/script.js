@@ -13,9 +13,13 @@ const messageArea = document.getElementById("message-area");
 const messageInput = document.getElementById("message-input");
 const btnSend = document.getElementById("btn-send");
 const btnNewChat = document.getElementById("btn-new-chat");
+const btnDryRun = document.getElementById("btn-dry-run");
 const btnCloseChatList = document.getElementById("btn-close-chat-list");
+const btnCloseXray = document.getElementById("btn-close-xray");
 const chatListPanel = document.getElementById("chat-list-panel");
 const chatList = document.getElementById("chat-list");
+const xrayPanel = document.getElementById("xray-panel");
+const xrayContent = document.getElementById("xray-content");
 const streamingIndicator = document.getElementById("streaming-indicator");
 const welcomeMessage = messageArea.querySelector(".welcome-message");
 
@@ -24,7 +28,9 @@ const welcomeMessage = messageArea.querySelector(".welcome-message");
 document.addEventListener("DOMContentLoaded", async () => {
   btnSend.addEventListener("click", handleSend);
   btnNewChat.addEventListener("click", toggleChatList);
+  btnDryRun.addEventListener("click", handleDryRun);
   btnCloseChatList.addEventListener("click", () => chatListPanel.classList.add("hidden"));
+  btnCloseXray.addEventListener("click", () => xrayPanel.classList.add("hidden"));
 
   messageInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -179,11 +185,91 @@ async function handleSend() {
   }
 }
 
+async function handleDryRun() {
+  const message = messageInput.value.trim() || "Tell me what you remember about wine and swords.";
+  xrayPanel.classList.remove("hidden");
+  xrayContent.innerHTML = '<div class="xray-loading">Running...</div>';
+
+  try {
+    const result = await SDK.dryRunPromptPipeline(currentChatId, message);
+    renderXray(result);
+  } catch (e) {
+    xrayContent.innerHTML = `<div class="xray-error">${escapeHtml(String(e))}</div>`;
+  }
+}
+
 function toggleChatList() {
   chatListPanel.classList.toggle("hidden");
   if (!chatListPanel.classList.contains("hidden")) {
     loadChatList();
   }
+}
+
+function renderXray(result) {
+  const budget = result.budget || {};
+  const total = Math.max(1, budget.total_tokens || 0);
+  const systemPct = Math.round(((budget.system_tokens || 0) / total) * 100);
+  const lorePct = Math.round(((budget.lore_tokens || 0) / total) * 100);
+  const ragPct = Math.round(((budget.rag_tokens || 0) / total) * 100);
+  const historyPct = Math.max(0, 100 - systemPct - lorePct - ragPct);
+
+  const world = result.world_triggers || [];
+  const recalls = result.rag_recalls || [];
+  const mutations = result.regex_mutations || [];
+  const insertions = result.insertions || [];
+
+  xrayContent.innerHTML = `
+    <div class="budget-row">
+      <div class="budget-pie" style="background: conic-gradient(
+        #d4956b 0 ${systemPct}%,
+        #6bb7d4 ${systemPct}% ${systemPct + lorePct}%,
+        #9bd46b ${systemPct + lorePct}% ${systemPct + lorePct + ragPct}%,
+        #8f7ad4 ${systemPct + lorePct + ragPct}% 100%
+      )"></div>
+      <div class="budget-list">
+        <div>System ${systemPct}%</div>
+        <div>Lore ${lorePct}%</div>
+        <div>RAG ${ragPct}%</div>
+        <div>History ${historyPct}%</div>
+        <div>${budget.total_tokens || 0}/${budget.max_context_tokens || 0} tokens</div>
+      </div>
+    </div>
+
+    <div class="xray-section">
+      <h4>Triggers</h4>
+      ${renderTriggerList(world, recalls)}
+    </div>
+
+    <div class="xray-section">
+      <h4>Mutations</h4>
+      ${mutations.length ? mutations.map((m) => `
+        <div class="xray-item">${escapeHtml(m.mutator_id)} depth ${m.depth}: ${m.before_tokens} -> ${m.after_tokens}</div>
+      `).join("") : '<div class="xray-muted">None</div>'}
+    </div>
+
+    <div class="xray-section">
+      <h4>Insertions</h4>
+      ${insertions.length ? insertions.map((item) => `
+        <div class="xray-item">${escapeHtml(item.label)} at index ${item.index}</div>
+      `).join("") : '<div class="xray-muted">None</div>'}
+    </div>
+
+    <div class="xray-section">
+      <h4>Payload</h4>
+      <pre class="payload-waterfall">${escapeHtml(result.final_text || "")}</pre>
+    </div>
+  `;
+}
+
+function renderTriggerList(world, recalls) {
+  const worldHtml = world.map((entry) => `
+    <div class="xray-item">World: ${escapeHtml(entry.id || entry.keys.join(", "))} (${escapeHtml(entry.trigger)})</div>
+  `);
+  const recallHtml = recalls.map((entry) => `
+    <div class="xray-item">Recall: ${Math.round(entry.similarity * 100)}% ${escapeHtml(entry.content.slice(0, 80))}</div>
+  `);
+  const html = [...worldHtml, ...recallHtml];
+  return html.length ? html.join("") : '<div class="xray-muted">None</div>';
 }
 
 // ── UI Helpers ─────────────────────────────

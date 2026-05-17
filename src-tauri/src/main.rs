@@ -59,6 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             presentation::commands::settings_commands::delete_api_key,
             presentation::commands::settings_commands::get_all_api_keys,
             presentation::commands::chat_commands::send_chat,
+            presentation::commands::chat_commands::dry_run_prompt_pipeline,
             presentation::commands::chat_commands::create_chat,
             presentation::commands::chat_commands::list_chats,
             presentation::commands::chat_commands::get_messages,

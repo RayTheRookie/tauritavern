@@ -1,4 +1,4 @@
-use crate::application::dto::{Manifest, PresetConfig, WorldEntry};
+use crate::application::dto::{Manifest, PipelineConfig, PresetConfig, WorldEntry, WorldInfoBook};
 use std::path::Path;
 
 pub fn guess_mime(path: &str) -> &'static str {
@@ -53,8 +53,8 @@ pub fn load_asset(cartridge_dir: &Path, relative_path: &str) -> Result<Vec<u8>, 
 
 pub fn load_manifest(cartridge_dir: &Path) -> Result<Manifest, String> {
     let path = cartridge_dir.join("manifest.json");
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read manifest.json: {}", e))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read manifest.json: {}", e))?;
     serde_json::from_str(&content).map_err(|e| format!("Invalid manifest.json: {}", e))
 }
 
@@ -70,7 +70,26 @@ pub fn load_world_info(cartridge_dir: &Path) -> Result<Vec<WorldEntry>, String> 
     if !path.exists() {
         return Ok(vec![]);
     }
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read world_info.json: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Invalid world_info.json: {}", e))
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read world_info.json: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid world_info.json: {}", e))?;
+
+    if value.is_array() {
+        serde_json::from_value(value).map_err(|e| format!("Invalid world_info.json: {}", e))
+    } else {
+        let book: WorldInfoBook =
+            serde_json::from_value(value).map_err(|e| format!("Invalid world_info.json: {}", e))?;
+        Ok(book.entries)
+    }
+}
+
+pub fn load_pipeline(cartridge_dir: &Path) -> Result<PipelineConfig, String> {
+    let path = cartridge_dir.join("pipeline.json");
+    if !path.exists() {
+        return Ok(PipelineConfig::default());
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read pipeline.json: {}", e))?;
+    serde_json::from_str(&content).map_err(|e| format!("Invalid pipeline.json: {}", e))
 }

@@ -182,6 +182,22 @@
     },
 
     /**
+     * Run the headless prompt pipeline without sending a network request.
+     * @param {string|null} chatId - Existing chat ID, or null for an empty dry run.
+     * @param {string} message - Simulated user message.
+     * @returns {Promise<Object>} Prompt X-Ray metadata and final payload.
+     */
+    async dryRunPromptPipeline(chatId, message) {
+      const invoke = getInvoke();
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("dry_run_prompt_pipeline", {
+        cartridgeId,
+        chatId: chatId || null,
+        message,
+      });
+    },
+
+    /**
      * Delete a chat and all its messages.
      * @param {string} chatId
      * @returns {Promise<void>}

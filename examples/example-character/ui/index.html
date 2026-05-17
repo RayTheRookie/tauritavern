@@ -17,6 +17,7 @@
         <span class="char-subtitle">Master of Drunken Sword Arts</span>
       </div>
       <div class="header-actions">
+        <button id="btn-dry-run" class="btn-icon btn-xray" title="干跑一次 (Dry Run)">XR</button>
         <button id="btn-new-chat" class="btn-icon" title="New Chat">+</button>
       </div>
     </header>
@@ -27,6 +28,14 @@
         <button id="btn-close-chat-list" class="btn-icon">&times;</button>
       </div>
       <div id="chat-list" class="chat-list"></div>
+    </div>
+
+    <div id="xray-panel" class="xray-panel hidden">
+      <div class="xray-header">
+        <h3>Prompt X-Ray</h3>
+        <button id="btn-close-xray" class="btn-icon">&times;</button>
+      </div>
+      <div id="xray-content" class="xray-content"></div>
     </div>
 
     <main id="message-area" class="message-area">

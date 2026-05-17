@@ -86,6 +86,11 @@ body {
   border-color: var(--accent);
 }
 
+.btn-xray {
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
 /* ── Chat List Panel ────────────────────── */
 
 .chat-list-panel {
@@ -162,6 +167,110 @@ body {
 
 .chat-list-item-delete:hover {
   color: #e74c5e;
+}
+
+/* ── Prompt X-Ray ───────────────────────── */
+
+.xray-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(520px, 100%);
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+}
+
+.xray-panel.hidden {
+  display: none;
+}
+
+.xray-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.xray-header h3 {
+  font-size: 0.95rem;
+}
+
+.xray-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.budget-row {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.budget-pie {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.budget-list,
+.xray-item,
+.xray-muted,
+.xray-loading,
+.xray-error {
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.budget-list {
+  color: var(--text-muted);
+}
+
+.xray-section {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.xray-section h4 {
+  font-size: 0.8rem;
+  margin-bottom: 8px;
+  color: var(--accent);
+}
+
+.xray-item {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(61, 48, 36, 0.45);
+}
+
+.xray-muted {
+  color: var(--text-muted);
+}
+
+.xray-error {
+  color: #e74c5e;
+}
+
+.payload-waterfall {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 420px;
+  overflow: auto;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
 }
 
 /* ── Messages ───────────────────────────── */

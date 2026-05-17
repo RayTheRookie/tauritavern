@@ -32,6 +32,19 @@ pub struct MessageRow {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct RagMemoryRow {
+    pub id: String,
+    pub cartridge_id: String,
+    pub chat_id: Option<String>,
+    pub message_id: Option<String>,
+    pub source_type: String,
+    pub source_id: Option<String>,
+    pub content: String,
+    pub vector_json: String,
+    pub created_at: String,
+}
+
 #[derive(Clone)]
 pub struct SqliteRepo {
     pool: SqlitePool,
@@ -82,10 +95,16 @@ impl SqliteRepo {
 
     pub async fn delete_cartridge(&self, id: &str) -> Result<(), sqlx::Error> {
         // Manual cascade: delete messages → chats → cartridge
-        sqlx::query("DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE cartridge_id = ?)")
+        sqlx::query("DELETE FROM rag_memories WHERE cartridge_id = ?")
             .bind(id)
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE cartridge_id = ?)",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
         sqlx::query("DELETE FROM chats WHERE cartridge_id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -123,6 +142,10 @@ impl SqliteRepo {
     }
 
     pub async fn delete_chat(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM rag_memories WHERE chat_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
         sqlx::query("DELETE FROM messages WHERE chat_id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -173,4 +196,79 @@ impl SqliteRepo {
         .await
     }
 
+    pub async fn get_recent_messages_by_chat(
+        &self,
+        chat_id: &str,
+        limit: i64,
+    ) -> Result<Vec<MessageRow>, sqlx::Error> {
+        let mut rows = sqlx::query_as::<_, MessageRow>(
+            "SELECT id, chat_id, role, content, created_at FROM messages WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(chat_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.reverse();
+        Ok(rows)
+    }
+
+    // ── RAG Memories ────────────────────────────────────────────
+
+    pub async fn insert_rag_memory(&self, memory: &RagMemoryRow) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO rag_memories
+             (id, cartridge_id, chat_id, message_id, source_type, source_id, content, vector_json, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&memory.id)
+        .bind(&memory.cartridge_id)
+        .bind(&memory.chat_id)
+        .bind(&memory.message_id)
+        .bind(&memory.source_type)
+        .bind(&memory.source_id)
+        .bind(&memory.content)
+        .bind(&memory.vector_json)
+        .bind(&memory.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_rag_memories(
+        &self,
+        cartridge_id: &str,
+        source_type: Option<&str>,
+    ) -> Result<Vec<RagMemoryRow>, sqlx::Error> {
+        if let Some(source_type) = source_type {
+            sqlx::query_as::<_, RagMemoryRow>(
+                "SELECT id, cartridge_id, chat_id, message_id, source_type, source_id, content, vector_json, created_at
+                 FROM rag_memories WHERE cartridge_id = ? AND source_type = ?",
+            )
+            .bind(cartridge_id)
+            .bind(source_type)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as::<_, RagMemoryRow>(
+                "SELECT id, cartridge_id, chat_id, message_id, source_type, source_id, content, vector_json, created_at
+                 FROM rag_memories WHERE cartridge_id = ?",
+            )
+            .bind(cartridge_id)
+            .fetch_all(&self.pool)
+            .await
+        }
+    }
+
+    pub async fn delete_rag_memories_by_source_type(
+        &self,
+        cartridge_id: &str,
+        source_type: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM rag_memories WHERE cartridge_id = ? AND source_type = ?")
+            .bind(cartridge_id)
+            .bind(source_type)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }

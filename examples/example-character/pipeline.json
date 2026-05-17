@@ -1,0 +1,18 @@
+{
+  "context_strategy": {
+    "max_context_tokens": 8000,
+    "rag_fetch_count": 3,
+    "rag_similarity_threshold": 0.75,
+    "history_fetch_limit": 100
+  },
+  "regex_mutators": [
+    {
+      "id": "extract_summary_only",
+      "target": "history",
+      "depth_range": [15, 999],
+      "pattern": "<text>[\\s\\S]*?</text>\\n<zongjie>([\\s\\S]*?)</zongjie>",
+      "replacement": "<zongjie>$1</zongjie>",
+      "description": "Older records keep only summary tags to reduce context tokens."
+    }
+  ]
+}

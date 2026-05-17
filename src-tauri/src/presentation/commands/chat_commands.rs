@@ -1,4 +1,6 @@
-use crate::application::dto::{ChatInfo, ChatMessage, PresetConfig, WorldEntry};
+use crate::application::dto::{
+    ChatInfo, ChatMessage, PresetConfig, PromptDryRunResult, WorldEntry,
+};
 use crate::application::services::chat_completion_service;
 use crate::infrastructure::database::ChatRow;
 use crate::infrastructure::fs;
@@ -15,6 +17,22 @@ pub async fn send_chat(
     message: String,
 ) -> Result<(), String> {
     chat_completion_service::handle_chat(&state, &cartridge_id, &chat_id, &message, &window).await
+}
+
+#[tauri::command]
+pub async fn dry_run_prompt_pipeline(
+    state: tauri::State<'_, AppState>,
+    cartridge_id: String,
+    chat_id: Option<String>,
+    message: String,
+) -> Result<PromptDryRunResult, String> {
+    chat_completion_service::dry_run_prompt_pipeline(
+        &state,
+        &cartridge_id,
+        chat_id.as_deref(),
+        &message,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -94,10 +112,7 @@ pub async fn get_messages(
 }
 
 #[tauri::command]
-pub async fn delete_chat(
-    state: tauri::State<'_, AppState>,
-    chat_id: String,
-) -> Result<(), String> {
+pub async fn delete_chat(state: tauri::State<'_, AppState>, chat_id: String) -> Result<(), String> {
     state
         .repo
         .delete_chat(&chat_id)
