@@ -1,0 +1,9 @@
+# Rust build output
+src-tauri/target/
+
+# Node dependencies
+node_modules/
+
+# OS files
+.DS_Store
+Thumbs.db
