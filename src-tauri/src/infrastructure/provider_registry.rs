@@ -63,9 +63,7 @@ pub fn all_providers() -> Vec<ProviderInfo> {
         ProviderInfo {
             id: "google_gemini".into(),
             display_name: "Google Gemini".into(),
-            default_url: Some(
-                "https://generativelanguage.googleapis.com/v1beta/models".into(),
-            ),
+            default_url: Some("https://generativelanguage.googleapis.com/v1beta/models".into()),
             default_model: "gemini-2.0-flash".into(),
             api_format: ApiFormat::Gemini,
             auth_type: AuthType::GoogleApiKey,
@@ -151,7 +149,11 @@ pub fn get_provider(id: &str) -> Option<ProviderInfo> {
     all_providers().into_iter().find(|p| p.id == id)
 }
 
-pub fn resolve_url(provider_id: &str, preset_url: &Option<String>, global_url: &Option<String>) -> String {
+pub fn resolve_url(
+    provider_id: &str,
+    preset_url: &Option<String>,
+    global_url: &Option<String>,
+) -> String {
     let info = get_provider(provider_id);
     preset_url
         .clone()

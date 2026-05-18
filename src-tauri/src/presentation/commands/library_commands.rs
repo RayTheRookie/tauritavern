@@ -10,7 +10,11 @@ use tauri::WebviewWindowBuilder;
 pub async fn list_cartridges(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<CartridgeInfo>, String> {
-    let rows = state.repo.get_all_cartridges().await.map_err(|e| e.to_string())?;
+    let rows = state
+        .repo
+        .get_all_cartridges()
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
     for row in rows {
@@ -44,10 +48,7 @@ pub async fn import_cartridge(
 }
 
 #[tauri::command]
-pub async fn delete_cartridge(
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_cartridge(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     let cartridge = state
         .repo
         .get_cartridge(&id)
@@ -98,9 +99,11 @@ pub async fn open_cartridge(
         cartridge_id, cartridge.entry_file
     );
 
-    WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(
-        url.parse().map_err(|e| format!("Invalid URL: {}", e))?
-    ))
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::External(url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
+    )
     .title(&cartridge.name)
     .inner_size(900.0, 700.0)
     .resizable(true)

@@ -44,6 +44,14 @@ document.addEventListener("DOMContentLoaded", async () => {
 });
 
 function setupEventListeners() {
+  document.getElementById("btn-create").addEventListener("click", async () => {
+    try {
+      const workbenchId = await invoke("open_creator");
+      console.log("Creator opened, workbench:", workbenchId);
+    } catch (e) {
+      showToast("Failed to open creator: " + e, "error");
+    }
+  });
   btnImport.addEventListener("click", handleImport);
   btnSettings.addEventListener("click", () => settingsModal.classList.remove("hidden"));
   btnCloseSettings.addEventListener("click", () => settingsModal.classList.add("hidden"));
@@ -126,7 +134,7 @@ async function handleImport() {
   try {
     const file = await open({
       multiple: false,
-      filters: [{ name: "TauriTavern Card", extensions: ["taurichar"] }],
+      filters: [{ name: "Character Card", extensions: ["taurichar", "png"] }],
     });
 
     if (!file) return;
@@ -144,6 +152,15 @@ async function handleOpenCartridge(id) {
     await invoke("open_cartridge", { cartridgeId: id });
   } catch (e) {
     showToast(`Failed to open: ${e}`, "error");
+  }
+}
+
+async function handleEditCartridge(id) {
+  try {
+    const workbenchId = await invoke("open_creator_for_cartridge", { cartridgeId: id });
+    console.log("Creator opened for cartridge, workbench:", workbenchId);
+  } catch (e) {
+    showToast(`Failed to edit: ${e}`, "error");
   }
 }
 
@@ -476,6 +493,7 @@ function renderGrid() {
       </div>
       <div class="card-actions">
         <button class="btn btn-primary btn-sm btn-open">Open</button>
+        <button class="btn btn-ghost btn-sm btn-edit">Edit</button>
         <button class="btn btn-ghost btn-sm btn-delete">Delete</button>
       </div>
     </div>`
@@ -487,6 +505,10 @@ function renderGrid() {
     card.querySelector(".btn-open").addEventListener("click", (e) => {
       e.stopPropagation();
       handleOpenCartridge(id);
+    });
+    card.querySelector(".btn-edit").addEventListener("click", (e) => {
+      e.stopPropagation();
+      handleEditCartridge(id);
     });
     card.querySelector(".btn-delete").addEventListener("click", (e) => {
       e.stopPropagation();

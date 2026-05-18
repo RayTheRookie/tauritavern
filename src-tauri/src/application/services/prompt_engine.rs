@@ -1,7 +1,7 @@
 use crate::application::dto::{
-    ChatMessage, PipelineConfig, PresetConfig, PromptBudgetReport, PromptDryRunResult,
-    PromptInsertionDebug, RagRecallDebug, RegexMutationDebug, RegexMutator, WorldEntry,
-    WorldTriggerDebug,
+    ChatMessage, PipelineConfig, PresetConfig, PresetPromptEntry, PromptBudgetReport,
+    PromptDryRunResult, PromptInsertionDebug, RagRecallDebug, RegexMutationDebug, RegexMutator,
+    WorldEntry, WorldTriggerDebug,
 };
 use crate::application::services::memory_service;
 use crate::infrastructure::apis::LlmHttpClient;
@@ -47,6 +47,24 @@ struct MacroVars {
     user_name: String,
     char_name: String,
     input: String,
+}
+
+#[derive(Debug, Clone)]
+struct PromptInjection {
+    label: String,
+    role: String,
+    content: String,
+    depth: usize,
+    order: i32,
+    seq: usize,
+    source: InjectionSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum InjectionSource {
+    Preset,
+    World,
+    Rag,
 }
 
 pub async fn render_prompt(
@@ -147,50 +165,84 @@ pub async fn render_prompt(
         input: user_message.to_string(),
     };
 
-    let system_message = ChatMessage {
-        role: "system".to_string(),
-        content: preset.system_prompt.clone(),
-    };
+    let mut relative_injections = Vec::new();
+    let mut in_chat_injections = Vec::new();
+    let mut seq = 0usize;
 
-    let mut upper_world = Vec::new();
-    let mut depth_world = Vec::new();
-    for trigger in &world_triggers {
-        if trigger.entry.insertion_depth.unwrap_or(0) == 0 {
-            upper_world.push(world_entry_to_message(&trigger.entry));
+    for entry in preset.effective_prompt_entries() {
+        if !preset_entry_is_active(&entry, user_message) {
+            continue;
+        }
+        let item = PromptInjection {
+            label: format!("preset:{}", entry.id),
+            role: normalize_role(&entry.role),
+            content: entry.content,
+            depth: entry.depth.unwrap_or(0),
+            order: entry.order,
+            seq,
+            source: InjectionSource::Preset,
+        };
+        seq += 1;
+        if entry.position == "in_chat" {
+            in_chat_injections.push(item);
         } else {
-            depth_world.push((trigger.entry.insertion_depth.unwrap_or(0), trigger.clone()));
+            relative_injections.push(item);
         }
     }
 
-    let author_note = preset
-        .authors_note
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|content| ChatMessage {
-            role: "system".to_string(),
-            content: format!("[Author's Note]\n{}", content),
-        });
+    for trigger in &world_triggers {
+        let entry = &trigger.entry;
+        let item = PromptInjection {
+            label: format!(
+                "world_info:{}",
+                entry.id.clone().unwrap_or_else(|| entry.keys.join(","))
+            ),
+            role: normalize_role(&entry.role),
+            content: entry.content.clone(),
+            depth: entry.insertion_depth.unwrap_or(0),
+            order: entry.order,
+            seq,
+            source: InjectionSource::World,
+        };
+        seq += 1;
+        match world_position(entry) {
+            "in_chat" => in_chat_injections.push(item),
+            _ => relative_injections.push(item),
+        }
+    }
 
-    let rag_messages: Vec<ChatMessage> = rag_memories
-        .iter()
-        .map(|memory| ChatMessage {
+    for (idx, memory) in rag_memories.iter().enumerate() {
+        relative_injections.push(PromptInjection {
+            label: format!("rag:{}", memory.row.id),
             role: "system".to_string(),
             content: format!("[Recall: {}]", memory.row.content),
-        })
-        .collect();
+            depth: 0,
+            order: 20_000 + idx as i32,
+            seq,
+            source: InjectionSource::Rag,
+        });
+        seq += 1;
+    }
 
-    let system_tokens = message_tokens(std::slice::from_ref(&system_message), model_name);
-    let lore_tokens = message_tokens(&upper_world, model_name)
-        + depth_world
-            .iter()
-            .map(|(_, trigger)| memory_service::count_tokens(&trigger.entry.content, model_name))
-            .sum::<usize>()
-        + author_note
-            .as_ref()
-            .map(|msg| memory_service::count_tokens(&msg.content, model_name))
-            .unwrap_or(0);
-    let rag_tokens = message_tokens(&rag_messages, model_name);
+    sort_relative_injections(&mut relative_injections);
+
+    let system_tokens = relative_injections
+        .iter()
+        .filter(|item| item.source == InjectionSource::Preset)
+        .map(|item| memory_service::count_tokens(&item.content, model_name))
+        .sum();
+    let lore_tokens = relative_injections
+        .iter()
+        .chain(in_chat_injections.iter())
+        .filter(|item| item.source != InjectionSource::Rag)
+        .map(|item| memory_service::count_tokens(&item.content, model_name))
+        .sum::<usize>()
+        .saturating_sub(system_tokens);
+    let rag_tokens = relative_injections
+        .iter()
+        .filter(|item| item.source == InjectionSource::Rag)
+        .map(|item| memory_service::count_tokens(&item.content, model_name))
+        .sum();
     let history_budget = max_context_tokens
         .saturating_sub(system_tokens)
         .saturating_sub(lore_tokens)
@@ -200,17 +252,15 @@ pub async fn render_prompt(
         select_recent_history(&history, history_budget, model_name);
 
     let mut messages = Vec::new();
-    messages.push(apply_macros_to_message(system_message, &macro_vars));
-    messages.extend(
-        upper_world
-            .into_iter()
-            .map(|msg| apply_macros_to_message(msg, &macro_vars)),
-    );
-    messages.extend(
-        rag_messages
-            .into_iter()
-            .map(|msg| apply_macros_to_message(msg, &macro_vars)),
-    );
+    messages.extend(relative_injections.into_iter().map(|item| {
+        apply_macros_to_message(
+            ChatMessage {
+                role: item.role,
+                content: item.content,
+            },
+            &macro_vars,
+        )
+    }));
 
     let selected_history_messages: Vec<ChatMessage> = selected_history
         .into_iter()
@@ -223,33 +273,21 @@ pub async fn render_prompt(
     let mut lower_history = selected_history_messages;
 
     let mut insertions = Vec::new();
-    for (depth, trigger) in depth_world {
-        let mut message = world_entry_to_message(&trigger.entry);
-        message = apply_macros_to_message(message, &macro_vars);
-        insert_with_depth(
-            &mut lower_history,
-            &mut insertions,
-            depth,
-            format!(
-                "world_info:{}",
-                trigger
-                    .entry
-                    .id
-                    .clone()
-                    .unwrap_or_else(|| trigger.entry.keys.join(","))
-            ),
-            message,
+    sort_in_chat_injections(&mut in_chat_injections);
+    for item in in_chat_injections {
+        let message = apply_macros_to_message(
+            ChatMessage {
+                role: item.role,
+                content: item.content,
+            },
+            &macro_vars,
         );
-    }
-
-    if let Some(note) = author_note {
-        let note = apply_macros_to_message(note, &macro_vars);
         insert_with_depth(
             &mut lower_history,
             &mut insertions,
-            preset.authors_note_depth.unwrap_or(2),
-            "authors_note".to_string(),
-            note,
+            item.depth,
+            item.label,
+            message,
         );
     }
 
@@ -326,7 +364,7 @@ pub fn spawn_static_world_index(repo: SqliteRepo, cartridge_id: String, cartridg
 
         for (idx, entry) in entries
             .into_iter()
-            .filter(|entry| entry.enable_semantic_search)
+            .filter(|entry| entry.enabled && entry.enable_semantic_search)
             .enumerate()
         {
             let source_id = entry
@@ -465,6 +503,10 @@ async fn trigger_world_entries(
     let mut result = Vec::new();
 
     for (idx, entry) in entries.iter().enumerate() {
+        if !entry.enabled {
+            continue;
+        }
+
         let identity = world_entry_identity(cartridge_id, entry);
         let keyword_hit = entry
             .keys
@@ -485,14 +527,11 @@ async fn trigger_world_entries(
 
         if entry.enable_semantic_search {
             let source_id = world_entry_source_id(entry, idx);
-            let similarity = indexed_scores
-                .get(&source_id)
-                .copied()
-                .unwrap_or_else(|| {
-                    let index_text = format!("{}\n{}", entry.keys.join("\n"), entry.content);
-                    let entry_vector = embed_text(&index_text);
-                    cosine_similarity(&query_vector, &entry_vector)
-                });
+            let similarity = indexed_scores.get(&source_id).copied().unwrap_or_else(|| {
+                let index_text = format!("{}\n{}", entry.keys.join("\n"), entry.content);
+                let entry_vector = embed_text(&index_text);
+                cosine_similarity(&query_vector, &entry_vector)
+            });
             if similarity >= threshold && seen.insert(identity) {
                 result.push(WorldTrigger {
                     entry: entry.clone(),
@@ -591,6 +630,10 @@ fn apply_regex_mutators(
 }
 
 fn mutator_applies(mutator: &RegexMutator, depth: usize) -> bool {
+    if !mutator.enabled {
+        return false;
+    }
+
     if mutator.target != "history" {
         return false;
     }
@@ -642,17 +685,54 @@ fn insert_with_depth(
     debug.push(debug_item);
 }
 
-fn world_entry_to_message(entry: &WorldEntry) -> ChatMessage {
-    ChatMessage {
-        role: normalize_role(&entry.role),
-        content: entry.content.clone(),
+fn preset_entry_is_active(entry: &PresetPromptEntry, query: &str) -> bool {
+    if !entry.enabled || entry.content.trim().is_empty() {
+        return false;
     }
+    entry.triggers.is_empty() || entry.triggers.iter().any(|key| key_matches(query, key))
+}
+
+fn world_position(entry: &WorldEntry) -> &'static str {
+    match entry.position.as_str() {
+        "top" | "relative" => "relative",
+        "in_chat" => "in_chat",
+        _ if entry.insertion_depth.is_some() => "in_chat",
+        _ => "relative",
+    }
+}
+
+fn sort_relative_injections(items: &mut [PromptInjection]) {
+    items.sort_by(|a, b| {
+        a.order
+            .cmp(&b.order)
+            .then_with(|| role_rank(&a.role).cmp(&role_rank(&b.role)))
+            .then_with(|| a.seq.cmp(&b.seq))
+    });
+}
+
+fn sort_in_chat_injections(items: &mut [PromptInjection]) {
+    items.sort_by(|a, b| {
+        b.depth
+            .cmp(&a.depth)
+            .then_with(|| a.order.cmp(&b.order))
+            .then_with(|| role_rank(&a.role).cmp(&role_rank(&b.role)))
+            .then_with(|| a.seq.cmp(&b.seq))
+    });
 }
 
 fn normalize_role(role: &str) -> String {
     match role {
         "user" | "assistant" | "system" => role.to_string(),
         _ => "system".to_string(),
+    }
+}
+
+fn role_rank(role: &str) -> usize {
+    match role {
+        "system" => 0,
+        "user" => 1,
+        "assistant" => 2,
+        _ => 3,
     }
 }
 
@@ -692,6 +772,10 @@ fn key_matches(query: &str, key: &str) -> bool {
     let key = key.trim();
     if key.is_empty() {
         return false;
+    }
+
+    if key == "*" {
+        return true;
     }
 
     if let Some(pattern) = key.strip_prefix("re:") {
@@ -777,6 +861,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::dto::{default_prompt_entries, PresetPromptEntry};
 
     fn history_msg(id: &str, depth: usize, content: &str) -> HistoryMessage {
         HistoryMessage {
@@ -797,10 +882,13 @@ mod tests {
         let pipeline = PipelineConfig {
             regex_mutators: vec![RegexMutator {
                 id: "summary".to_string(),
+                enabled: true,
                 target: "history".to_string(),
                 depth_range: vec![15, 999],
                 pattern: "<text>[\\s\\S]*?</text>\\n<zongjie>([\\s\\S]*?)</zongjie>".to_string(),
                 replacement: "<zongjie>$1</zongjie>".to_string(),
+                flags: String::new(),
+                sample: String::new(),
                 description: String::new(),
             }],
             ..PipelineConfig::default()
@@ -829,5 +917,112 @@ mod tests {
         let b = embed_text("哥布林住在地下城");
         let c = embed_text("月亮和酒杯");
         assert!(cosine_similarity(&a, &b) > cosine_similarity(&a, &c));
+    }
+
+    #[test]
+    fn old_preset_migrates_to_prompt_entries() {
+        let preset = PresetConfig {
+            system_prompt: "main".to_string(),
+            prompt_entries: Vec::new(),
+            model: None,
+            temperature: None,
+            max_tokens: None,
+            context_window_size: None,
+            provider: None,
+            provider_url: None,
+            chat_format: None,
+            authors_note: Some("note".to_string()),
+            authors_note_depth: Some(4),
+            user_name: None,
+            char_name: None,
+        };
+
+        let entries = preset.effective_prompt_entries();
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.id == "main_prompt")
+                .unwrap()
+                .content,
+            "main"
+        );
+        let note = entries
+            .iter()
+            .find(|entry| entry.id == "authors_note")
+            .unwrap();
+        assert_eq!(note.content, "note");
+        assert_eq!(note.depth, Some(4));
+    }
+
+    #[test]
+    fn in_chat_injections_sort_by_depth_order_role_then_sequence() {
+        let mut items = vec![
+            injection("late_user", "user", 1, 10, 0),
+            injection("older", "system", 3, 99, 1),
+            injection("same_order_assistant", "assistant", 1, 10, 2),
+            injection("same_order_system", "system", 1, 10, 3),
+        ];
+
+        sort_in_chat_injections(&mut items);
+        let labels: Vec<_> = items.into_iter().map(|item| item.label).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "older",
+                "same_order_system",
+                "late_user",
+                "same_order_assistant"
+            ]
+        );
+    }
+
+    #[test]
+    fn disabled_and_triggered_preset_entries_are_filtered() {
+        let mut active = default_prompt_entries().remove(0);
+        active.content = "active".to_string();
+        active.triggers = vec!["sword".to_string()];
+
+        let disabled = PresetPromptEntry {
+            enabled: false,
+            content: "disabled".to_string(),
+            ..active.clone()
+        };
+
+        assert!(preset_entry_is_active(&active, "draw the sword"));
+        assert!(!preset_entry_is_active(&active, "drink tea"));
+        assert!(!preset_entry_is_active(&disabled, "draw the sword"));
+    }
+
+    #[test]
+    fn world_position_defaults_match_legacy_depth_behavior() {
+        let mut entry = WorldEntry {
+            id: None,
+            enabled: true,
+            keys: Vec::new(),
+            content: "lore".to_string(),
+            secondary_keys: Vec::new(),
+            enable_semantic_search: false,
+            insertion_depth: None,
+            position: "auto".to_string(),
+            order: 0,
+            role: "system".to_string(),
+        };
+        assert_eq!(world_position(&entry), "relative");
+        entry.insertion_depth = Some(2);
+        assert_eq!(world_position(&entry), "in_chat");
+        entry.position = "top".to_string();
+        assert_eq!(world_position(&entry), "relative");
+    }
+
+    fn injection(label: &str, role: &str, depth: usize, order: i32, seq: usize) -> PromptInjection {
+        PromptInjection {
+            label: label.to_string(),
+            role: role.to_string(),
+            content: label.to_string(),
+            depth,
+            order,
+            seq,
+            source: InjectionSource::Preset,
+        }
     }
 }

@@ -164,9 +164,7 @@ pub async fn save_profile(
 }
 
 #[tauri::command]
-pub async fn list_profiles(
-    state: tauri::State<'_, AppState>,
-) -> Result<Vec<ProfileDto>, String> {
+pub async fn list_profiles(state: tauri::State<'_, AppState>) -> Result<Vec<ProfileDto>, String> {
     let rows = state
         .repo
         .list_profiles()
@@ -188,10 +186,7 @@ pub async fn list_profiles(
 }
 
 #[tauri::command]
-pub async fn delete_profile(
-    state: tauri::State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_profile(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
     state
         .repo
         .delete_profile(&id)
@@ -269,9 +264,7 @@ pub struct DiagnoseProfileEntry {
 }
 
 #[tauri::command]
-pub async fn check_keyring(
-    state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+pub async fn check_keyring(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let test_value = "keyring_test_value_123";
     let test_provider = "__keyring_test__";
     CredentialService::store(&state.repo, test_provider, test_value).await?;
@@ -294,9 +287,7 @@ pub async fn check_keyring(
 }
 
 #[tauri::command]
-pub async fn diagnose(
-    state: tauri::State<'_, AppState>,
-) -> Result<DiagnoseResult, String> {
+pub async fn diagnose(state: tauri::State<'_, AppState>) -> Result<DiagnoseResult, String> {
     let active_id = state.active_profile_id.lock().unwrap().clone();
     let mut active_profile = None;
 

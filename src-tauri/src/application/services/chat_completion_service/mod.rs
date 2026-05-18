@@ -74,17 +74,15 @@ pub async fn handle_chat(
         provider: Some(provider.clone()),
         model: Some(model),
         provider_url: api_url_override.clone(),
+        prompt_entries: preset.prompt_entries.clone(),
         ..preset
     };
 
     // Stream from LLM
     let client = LlmHttpClient::new();
     let api_url_ref = &api_url_override;
-    let stream_url = crate::infrastructure::provider_registry::resolve_url(
-        &provider,
-        api_url_ref,
-        api_url_ref,
-    );
+    let stream_url =
+        crate::infrastructure::provider_registry::resolve_url(&provider, api_url_ref, api_url_ref);
     let total_input_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
     log::info!(
         "→ API request: provider={} model={} url={} messages={} input_chars={}",
@@ -134,7 +132,7 @@ pub async fn handle_chat(
     log::info!(
         "← API response: output_chars={} (est. ~{} tokens)",
         output_chars,
-        output_chars / 2  // rough: CJK ~1 char/token, EN ~4 char/token → avg ~2
+        output_chars / 2 // rough: CJK ~1 char/token, EN ~4 char/token → avg ~2
     );
 
     // Save assistant response
@@ -173,7 +171,7 @@ pub async fn handle_chat(
     Ok(full_response)
 }
 
-async fn resolve_chat_config(
+pub async fn resolve_chat_config(
     state: &AppState,
     preset: &crate::application::dto::PresetConfig,
     active_pid: Option<&str>,
@@ -183,34 +181,31 @@ async fn resolve_chat_config(
 
     if let Some(pid) = active_pid {
         match state.repo.get_profile(pid).await {
-            Ok(Some(profile)) => match CredentialService::get(&state.repo, &profile.provider_id).await {
-                Ok(Some(key)) => {
-                    log::info!(
-                        "Using active profile '{}' ({} / {})",
-                        profile.name,
-                        profile.provider_id,
-                        profile.model
-                    );
-                    return Ok((
-                        profile.provider_id,
-                        profile.model,
-                        key,
-                        profile.api_url,
-                    ));
-                }
-                Ok(None) => {
-                    skip_reason = Some(format!(
+            Ok(Some(profile)) => {
+                match CredentialService::get(&state.repo, &profile.provider_id).await {
+                    Ok(Some(key)) => {
+                        log::info!(
+                            "Using active profile '{}' ({} / {})",
+                            profile.name,
+                            profile.provider_id,
+                            profile.model
+                        );
+                        return Ok((profile.provider_id, profile.model, key, profile.api_url));
+                    }
+                    Ok(None) => {
+                        skip_reason = Some(format!(
                         "Active profile '{}' has no API key for '{}' in the credential store. Re-configure your API key.",
                         profile.name, profile.provider_id
                     ));
+                    }
+                    Err(e) => {
+                        skip_reason = Some(format!(
+                            "Active profile '{}' keyring read error for '{}': {}",
+                            profile.name, profile.provider_id, e
+                        ));
+                    }
                 }
-                Err(e) => {
-                    skip_reason = Some(format!(
-                        "Active profile '{}' keyring read error for '{}': {}",
-                        profile.name, profile.provider_id, e
-                    ));
-                }
-            },
+            }
             Ok(None) => {
                 skip_reason = Some(format!(
                     "Active profile ID '{}' not found in database (may have been deleted)",
@@ -238,11 +233,10 @@ async fn resolve_chat_config(
                 hint, provider
             )
         })?;
-    let url = CredentialService::get_url(&state.repo, &provider).await.unwrap_or(None);
-    let model = preset
-        .model
-        .clone()
-        .unwrap_or_else(|| "gpt-4o".to_string());
+    let url = CredentialService::get_url(&state.repo, &provider)
+        .await
+        .unwrap_or(None);
+    let model = preset.model.clone().unwrap_or_else(|| "gpt-4o".to_string());
     Ok((provider, model, key, url))
 }
 

@@ -69,13 +69,13 @@ impl LlmHttpClient {
 
         match info.api_format {
             ApiFormat::Anthropic => {
-                self.test_anthropic_connection(api_key, api_url, model).await
+                self.test_anthropic_connection(api_key, api_url, model)
+                    .await
             }
-            ApiFormat::Gemini => {
-                self.test_gemini_connection(api_key, api_url, model).await
-            }
+            ApiFormat::Gemini => self.test_gemini_connection(api_key, api_url, model).await,
             ApiFormat::OpenAiCompatible => {
-                self.test_openai_compatible_connection(api_key, api_url, model, provider_id).await
+                self.test_openai_compatible_connection(api_key, api_url, model, provider_id)
+                    .await
             }
         }
     }
@@ -102,7 +102,10 @@ impl LlmHttpClient {
             return Err(format!("HTTP {}: {}", status, text));
         }
 
-        let json: Value = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
         let models: Vec<String> = json["data"]
             .as_array()
             .unwrap_or(&vec![])
@@ -131,7 +134,10 @@ impl LlmHttpClient {
             return Err(format!("HTTP {}: {}", status, text));
         }
 
-        let json: Value = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
         let models: Vec<String> = json["data"]
             .as_array()
             .unwrap_or(&vec![])
@@ -164,7 +170,10 @@ impl LlmHttpClient {
             return Err(format!("HTTP {}: {}", status, text));
         }
 
-        let json: Value = resp.json().await.map_err(|e| format!("Parse error: {}", e))?;
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
         let models: Vec<String> = json["models"]
             .as_array()
             .unwrap_or(&vec![])
@@ -216,7 +225,10 @@ impl LlmHttpClient {
             AuthType::GoogleApiKey => req.header("x-goog-api-key", api_key),
         };
 
-        let resp = req.send().await.map_err(|e| format!("Connection failed: {}", e))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("Connection failed: {}", e))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -271,10 +283,7 @@ impl LlmHttpClient {
             .rsplit_once("/models")
             .map(|(prefix, _)| prefix)
             .unwrap_or(api_url.trim_end_matches('/'));
-        let url = format!(
-            "{}/models/{}:generateContent?key={}",
-            base, model, api_key
-        );
+        let url = format!("{}/models/{}:generateContent?key={}", base, model, api_key);
 
         let body = serde_json::json!({
             "contents": [{"parts": [{"text": "Hi"}]}],
@@ -299,10 +308,7 @@ impl LlmHttpClient {
         Ok(())
     }
 
-    pub fn build_payload_preview(
-        preset: &PresetConfig,
-        messages: &[ChatMessage],
-    ) -> Value {
+    pub fn build_payload_preview(preset: &PresetConfig, messages: &[ChatMessage]) -> Value {
         let provider = preset
             .provider
             .clone()
@@ -322,10 +328,7 @@ impl LlmHttpClient {
         }
     }
 
-    pub fn serialize_messages_for_debug(
-        preset: &PresetConfig,
-        messages: &[ChatMessage],
-    ) -> String {
+    pub fn serialize_messages_for_debug(preset: &PresetConfig, messages: &[ChatMessage]) -> String {
         if preset
             .chat_format
             .as_deref()
@@ -376,7 +379,11 @@ impl LlmHttpClient {
         resolve_url(provider_id, &preset.provider_url, global_url)
     }
 
-    fn apply_auth(request: reqwest::RequestBuilder, provider: &str, api_key: &str) -> reqwest::RequestBuilder {
+    fn apply_auth(
+        request: reqwest::RequestBuilder,
+        provider: &str,
+        api_key: &str,
+    ) -> reqwest::RequestBuilder {
         let info = get_provider(provider);
         let auth_type = info
             .as_ref()
@@ -684,8 +691,8 @@ impl LlmHttpClient {
                                 if let Ok(parsed) = serde_json::from_str::<Value>(data) {
                                     if let Some(candidates) = parsed["candidates"].as_array() {
                                         for candidate in candidates {
-                                            if let Some(parts) = candidate["content"]["parts"]
-                                                .as_array()
+                                            if let Some(parts) =
+                                                candidate["content"]["parts"].as_array()
                                             {
                                                 for part in parts {
                                                     if let Some(text) = part["text"].as_str() {
@@ -700,7 +707,8 @@ impl LlmHttpClient {
                                                 }
                                             }
                                             // Non-standard stop reasons (SAFETY, RECITATION, etc.)
-                                            let reason = candidate["finishReason"].as_str().unwrap_or("");
+                                            let reason =
+                                                candidate["finishReason"].as_str().unwrap_or("");
                                             if !reason.is_empty()
                                                 && reason != "STOP"
                                                 && reason != "MAX_TOKENS"

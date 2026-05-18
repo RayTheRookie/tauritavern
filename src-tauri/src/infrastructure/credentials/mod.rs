@@ -10,16 +10,14 @@ impl CredentialService {
     // ── Keyring (sync) ──────────────────────
 
     pub fn store_keyring(provider: &str, key: &str) -> Result<(), String> {
-        let entry =
-            keyring::Entry::new(SERVICE_NAME, &format!("api_key_{}", provider))
-                .map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(SERVICE_NAME, &format!("api_key_{}", provider))
+            .map_err(|e| e.to_string())?;
         entry.set_password(key).map_err(|e| e.to_string())
     }
 
     pub fn get_keyring(provider: &str) -> Result<Option<String>, String> {
-        let entry =
-            keyring::Entry::new(SERVICE_NAME, &format!("api_key_{}", provider))
-                .map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(SERVICE_NAME, &format!("api_key_{}", provider))
+            .map_err(|e| e.to_string())?;
         match entry.get_password() {
             Ok(key) => Ok(Some(key)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -28,9 +26,8 @@ impl CredentialService {
     }
 
     pub fn delete_keyring(provider: &str) -> Result<(), String> {
-        let entry =
-            keyring::Entry::new(SERVICE_NAME, &format!("api_key_{}", provider))
-                .map_err(|e| e.to_string())?;
+        let entry = keyring::Entry::new(SERVICE_NAME, &format!("api_key_{}", provider))
+            .map_err(|e| e.to_string())?;
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             Err(keyring::Error::NoEntry) => Ok(()),
@@ -70,13 +67,22 @@ impl CredentialService {
         format!("kv_{}_{}", kind, provider)
     }
 
-    pub async fn fallback_store(repo: &SqliteRepo, provider: &str, value: &str, kind: &str) -> Result<(), String> {
+    pub async fn fallback_store(
+        repo: &SqliteRepo,
+        provider: &str,
+        value: &str,
+        kind: &str,
+    ) -> Result<(), String> {
         repo.set_setting(&Self::fallback_key(provider, kind), value)
             .await
             .map_err(|e| format!("Fallback store failed: {}", e))
     }
 
-    pub async fn fallback_get(repo: &SqliteRepo, provider: &str, kind: &str) -> Result<Option<String>, String> {
+    pub async fn fallback_get(
+        repo: &SqliteRepo,
+        provider: &str,
+        kind: &str,
+    ) -> Result<Option<String>, String> {
         repo.get_setting(&Self::fallback_key(provider, kind))
             .await
             .map_err(|e| format!("Fallback read failed: {}", e))

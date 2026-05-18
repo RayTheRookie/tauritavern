@@ -45,11 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let repo = SqliteRepo::new(pool);
 
     // Restore active profile from previous session
-    let active_profile_id = repo
-        .get_setting("active_profile_id")
-        .await
-        .ok()
-        .flatten();
+    let active_profile_id = repo.get_setting("active_profile_id").await.ok().flatten();
 
     let app_state = AppState::new(repo, data_dir.clone());
     if let Some(ref pid) = active_profile_id {
@@ -88,6 +84,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             presentation::commands::settings_commands::diagnose,
             presentation::commands::settings_commands::view_profile,
             presentation::commands::settings_commands::check_keyring,
+            presentation::commands::creator_commands::open_creator,
+            presentation::commands::creator_commands::open_creator_for_cartridge,
+            presentation::commands::creator_commands::delete_workbench,
+            presentation::commands::creator_commands::get_workbench,
+            presentation::commands::creator_commands::save_workbench_manifest,
+            presentation::commands::creator_commands::save_workbench_preset,
+            presentation::commands::creator_commands::save_workbench_world_info,
+            presentation::commands::creator_commands::save_workbench_pipeline,
+            presentation::commands::creator_commands::save_workbench_ui_file,
+            presentation::commands::creator_commands::import_workbench_cover_image,
+            presentation::commands::creator_commands::save_creator_agent_config,
+            presentation::commands::creator_commands::creator_agent_chat,
+            presentation::commands::creator_commands::test_chat_workbench,
+            presentation::commands::creator_commands::export_workbench,
             presentation::commands::chat_commands::send_chat,
             presentation::commands::chat_commands::dry_run_prompt_pipeline,
             presentation::commands::chat_commands::create_chat,
@@ -157,6 +167,66 @@ fn handle_tavern_protocol(
             .header("Access-Control-Allow-Origin", "*")
             .body(SDK_CONTENT.as_bytes().to_vec())
             .unwrap();
+    }
+
+    // Workbench endpoint — serves workbench files during editing (live preview)
+    if let Some(rest) = path.strip_prefix("workbench/") {
+        let mut parts = rest.splitn(2, '/');
+        let wb_id = parts.next().unwrap_or("");
+        let file_path = match parts.next() {
+            Some("") | None => "ui/index.html",
+            Some(p) => p,
+        };
+        if wb_id.is_empty() {
+            return tauri::http::Response::builder()
+                .status(400)
+                .body(b"Invalid workbench path".to_vec())
+                .unwrap();
+        }
+        let wb_dir = data_dir.join("workbench").join(wb_id);
+        let full_path = wb_dir.join(file_path);
+        // Path traversal protection
+        let canonical_dir = match wb_dir.canonicalize() {
+            Ok(d) => d,
+            Err(_) => {
+                return tauri::http::Response::builder()
+                    .status(404)
+                    .body(b"Workbench not found".to_vec())
+                    .unwrap()
+            }
+        };
+        let canonical_path = match full_path.canonicalize() {
+            Ok(p) => p,
+            Err(_) => {
+                return tauri::http::Response::builder()
+                    .status(404)
+                    .body(b"File not found".to_vec())
+                    .unwrap()
+            }
+        };
+        if !canonical_path.starts_with(&canonical_dir) {
+            return tauri::http::Response::builder()
+                .status(403)
+                .body(b"Access denied".to_vec())
+                .unwrap();
+        }
+        match std::fs::read(&canonical_path) {
+            Ok(data) => {
+                let content_type = guess_content_type(&canonical_path);
+                return tauri::http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", content_type)
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(data)
+                    .unwrap();
+            }
+            Err(_) => {
+                return tauri::http::Response::builder()
+                    .status(500)
+                    .body(b"Failed to read file".to_vec())
+                    .unwrap();
+            }
+        }
     }
 
     // Cartridge endpoint

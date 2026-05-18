@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Character Card Creator</title>
+  <script type="module" crossorigin src="/assets/creator-f6TTlqtC.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/core-CpHDeAaJ.js">
+  <link rel="stylesheet" crossorigin href="/assets/creator-WTWZl366.css">
+</head>
+<body>
+  <div id="creator-app">
+    <!-- Header -->
+    <header class="cr-header">
+      <div class="cr-header-left">
+        <h1 class="cr-logo">Creator</h1>
+        <span class="cr-workbench-id" id="workbench-id-display"></span>
+      </div>
+      <div class="cr-header-actions">
+        <span class="cr-dirty-indicator hidden" id="dirty-indicator">Unsaved</span>
+        <button id="btn-save-all" class="btn btn-primary btn-sm">Save All</button>
+        <button id="btn-export" class="btn btn-primary btn-sm">Export .taurichar</button>
+        <button id="btn-close-creator" class="btn btn-ghost btn-sm">&times; Close</button>
+      </div>
+    </header>
+
+    <div class="cr-workspace">
+      <aside class="cr-activitybar">
+        <nav class="cr-tabs" id="tab-bar">
+          <button class="cr-tab active" data-tab="metadata" title="Metadata">Meta</button>
+          <button class="cr-tab" data-tab="preset" title="Preset">Preset</button>
+          <button class="cr-tab" data-tab="world-info" title="World Info">World</button>
+          <button class="cr-tab" data-tab="pipeline" title="Pipeline">Pipe</button>
+          <button class="cr-tab" data-tab="ui-code" title="UI Code">Code</button>
+          <button class="cr-tab" data-tab="test-chat" title="Test Chat">Chat</button>
+        </nav>
+      </aside>
+
+      <aside class="cr-left-sidebar" id="left-sidebar">
+        <div class="sidebar-title">Workbench</div>
+        <div id="sidebar-context" class="sidebar-context"></div>
+      </aside>
+      <div class="cr-resizer cr-resizer-left" id="left-resizer"></div>
+
+      <main class="cr-content">
+        <section class="cr-panel" id="panel-metadata"></section>
+        <section class="cr-panel hidden" id="panel-preset"></section>
+        <section class="cr-panel hidden" id="panel-world-info"></section>
+        <section class="cr-panel hidden" id="panel-pipeline"></section>
+        <section class="cr-panel hidden" id="panel-ui-code"></section>
+        <section class="cr-panel hidden" id="panel-test-chat"></section>
+      </main>
+
+      <div class="cr-resizer cr-resizer-preview" id="preview-resizer"></div>
+      <aside class="cr-preview-sidebar" id="preview-sidebar">
+        <div class="preview-header">
+          <div>
+            <strong>Live Preview</strong>
+            <span id="preview-status">Realtime srcdoc</span>
+          </div>
+          <div class="preview-actions">
+            <button id="preview-refresh" class="btn btn-ghost btn-sm">Refresh</button>
+            <button id="preview-focus-code" class="btn btn-primary btn-sm">Code</button>
+          </div>
+        </div>
+        <iframe id="creator-preview-iframe" title="UI preview" src="about:blank"></iframe>
+      </aside>
+    </div>
+
+    <!-- Toast -->
+    <div id="cr-toast" class="cr-toast hidden"></div>
+
+    <!-- Creator Agent -->
+    <button id="agent-bubble" class="agent-bubble" title="Creator Agent">AI</button>
+    <aside id="agent-panel" class="agent-panel hidden">
+      <div class="agent-header">
+        <div>
+          <strong>Creator Agent</strong>
+          <span>World, preset, pipeline, UI</span>
+        </div>
+        <div class="agent-header-actions">
+          <button id="agent-settings" class="btn btn-ghost btn-sm">Settings</button>
+          <button id="agent-close" class="btn btn-ghost btn-sm">&times;</button>
+        </div>
+      </div>
+      <div id="agent-messages" class="agent-messages">
+        <div class="agent-msg assistant">Tell me what to change. I can edit world info, presets, pipeline settings, and UI code directly.</div>
+      </div>
+      <div class="agent-input-row">
+        <textarea id="agent-input" rows="3" placeholder="Ask the creator agent..."></textarea>
+        <button id="agent-send" class="btn btn-primary btn-sm">Send</button>
+      </div>
+    </aside>
+  </div>
+</body>
+</html>

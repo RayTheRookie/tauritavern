@@ -1,6 +1,40 @@
 use crate::application::dto::{Manifest, PipelineConfig, PresetConfig, WorldEntry, WorldInfoBook};
 use std::path::Path;
 
+/// Save any serializable value as pretty-printed JSON.
+pub fn save_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("JSON serialization error: {}", e))?;
+    std::fs::write(path, &json).map_err(|e| format!("Failed to write {}: {}", path.display(), e))
+}
+
+/// Load and deserialize a JSON file.
+pub fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
+    let data = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    serde_json::from_str(&data).map_err(|e| format!("Failed to parse {}: {}", path.display(), e))
+}
+
+/// Load world info entries, supporting both object {entries:[]} and array formats.
+pub fn load_world_info_entries(dir: &Path) -> Result<Vec<WorldEntry>, String> {
+    let path = dir.join("world_info.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Failed to read world_info.json: {}", e))?;
+    if let Ok(book) = serde_json::from_str::<serde_json::Value>(&data) {
+        if let Some(entries) = book.get("entries").and_then(|e| e.as_array()) {
+            return entries
+                .iter()
+                .map(|v| serde_json::from_value::<WorldEntry>(v.clone()).map_err(|e| e.to_string()))
+                .collect();
+        }
+    }
+    serde_json::from_str::<Vec<WorldEntry>>(&data)
+        .map_err(|e| format!("Failed to parse world_info.json: {}", e))
+}
+
 pub fn guess_mime(path: &str) -> &'static str {
     let ext = Path::new(path)
         .extension()
@@ -70,7 +104,10 @@ pub fn load_preset(cartridge_dir: &Path) -> Result<PresetConfig, String> {
     let path = cartridge_dir.join("preset.json");
     let content =
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read preset.json: {}", e))?;
-    serde_json::from_str(&content).map_err(|e| format!("Invalid preset.json: {}", e))
+    let mut preset: PresetConfig =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid preset.json: {}", e))?;
+    preset.ensure_prompt_entries();
+    Ok(preset)
 }
 
 pub fn load_world_info(cartridge_dir: &Path) -> Result<Vec<WorldEntry>, String> {

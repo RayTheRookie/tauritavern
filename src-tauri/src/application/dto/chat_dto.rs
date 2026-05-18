@@ -9,6 +9,8 @@ pub struct ChatMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresetConfig {
     pub system_prompt: String,
+    #[serde(default)]
+    pub prompt_entries: Vec<PresetPromptEntry>,
     pub model: Option<String>,
     pub temperature: Option<f64>,
     /// Maximum tokens for the LLM completion (output). Defaults to 4096.
@@ -28,6 +30,130 @@ pub struct PresetConfig {
     pub user_name: Option<String>,
     #[serde(default)]
     pub char_name: Option<String>,
+}
+
+impl PresetConfig {
+    pub fn effective_prompt_entries(&self) -> Vec<PresetPromptEntry> {
+        if !self.prompt_entries.is_empty() {
+            return self.prompt_entries.clone();
+        }
+
+        let mut entries = default_prompt_entries();
+        if let Some(main) = entries.iter_mut().find(|entry| entry.id == "main_prompt") {
+            main.content = self.system_prompt.clone();
+            main.enabled = !main.content.trim().is_empty();
+        }
+        if let Some(note) = entries.iter_mut().find(|entry| entry.id == "authors_note") {
+            note.content = self.authors_note.clone().unwrap_or_default();
+            note.enabled = !note.content.trim().is_empty();
+            note.depth = self.authors_note_depth;
+        }
+        entries
+    }
+
+    pub fn ensure_prompt_entries(&mut self) {
+        if self.prompt_entries.is_empty() {
+            self.prompt_entries = self.effective_prompt_entries();
+        }
+        if let Some(main) = self
+            .prompt_entries
+            .iter()
+            .find(|entry| entry.id == "main_prompt")
+        {
+            self.system_prompt = main.content.clone();
+        }
+        if let Some(note) = self
+            .prompt_entries
+            .iter()
+            .find(|entry| entry.id == "authors_note")
+        {
+            self.authors_note = if note.content.trim().is_empty() {
+                None
+            } else {
+                Some(note.content.clone())
+            };
+            self.authors_note_depth = note.depth;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresetPromptEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_system_role")]
+    pub role: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default = "default_prompt_position")]
+    pub position: String,
+    #[serde(default)]
+    pub depth: Option<usize>,
+    #[serde(default)]
+    pub order: i32,
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+pub fn default_prompt_entries() -> Vec<PresetPromptEntry> {
+    vec![
+        PresetPromptEntry {
+            id: "main_prompt".to_string(),
+            name: "Main Prompt".to_string(),
+            enabled: true,
+            role: "system".to_string(),
+            content: "You are a helpful assistant.".to_string(),
+            position: "relative".to_string(),
+            depth: None,
+            order: 0,
+            triggers: Vec::new(),
+            pinned: true,
+        },
+        PresetPromptEntry {
+            id: "auxiliary_prompt".to_string(),
+            name: "Auxiliary Prompt".to_string(),
+            enabled: false,
+            role: "system".to_string(),
+            content: String::new(),
+            position: "relative".to_string(),
+            depth: None,
+            order: 100,
+            triggers: Vec::new(),
+            pinned: true,
+        },
+        PresetPromptEntry {
+            id: "authors_note".to_string(),
+            name: "Author's Note".to_string(),
+            enabled: false,
+            role: "system".to_string(),
+            content: String::new(),
+            position: "in_chat".to_string(),
+            depth: Some(2),
+            order: 200,
+            triggers: Vec::new(),
+            pinned: true,
+        },
+        PresetPromptEntry {
+            id: "post_history_instructions".to_string(),
+            name: "Post-History Instructions".to_string(),
+            enabled: false,
+            role: "system".to_string(),
+            content: String::new(),
+            position: "in_chat".to_string(),
+            depth: Some(0),
+            order: 300,
+            triggers: Vec::new(),
+            pinned: true,
+        },
+    ]
+}
+
+fn default_prompt_position() -> String {
+    "relative".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +182,8 @@ fn default_entry_file() -> String {
 pub struct WorldEntry {
     #[serde(default)]
     pub id: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub keys: Vec<String>,
     pub content: String,
@@ -65,12 +193,24 @@ pub struct WorldEntry {
     pub enable_semantic_search: bool,
     #[serde(default)]
     pub insertion_depth: Option<usize>,
+    #[serde(default = "default_world_position")]
+    pub position: String,
+    #[serde(default)]
+    pub order: i32,
     #[serde(default = "default_system_role")]
     pub role: String,
 }
 
+fn default_enabled() -> bool {
+    true
+}
+
 fn default_system_role() -> String {
     "system".to_string()
+}
+
+fn default_world_position() -> String {
+    "auto".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +278,8 @@ fn default_history_fetch_limit() -> usize {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegexMutator {
     pub id: String,
+    #[serde(default = "default_regex_enabled")]
+    pub enabled: bool,
     #[serde(default = "default_history_target")]
     pub target: String,
     #[serde(default)]
@@ -145,7 +287,15 @@ pub struct RegexMutator {
     pub pattern: String,
     pub replacement: String,
     #[serde(default)]
+    pub flags: String,
+    #[serde(default)]
+    pub sample: String,
+    #[serde(default)]
     pub description: String,
+}
+
+fn default_regex_enabled() -> bool {
+    true
 }
 
 fn default_history_target() -> String {
