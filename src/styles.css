@@ -255,6 +255,84 @@ body {
 
 /* ── Settings ────────────────────────────── */
 
+.provider-selector {
+  margin-bottom: 16px;
+}
+
+.provider-selector label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.provider-selector label span {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.provider-selector select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L2 4h8z' fill='%238888a0'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+.provider-selector select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.provider-selector select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.provider-config {
+  margin-top: 8px;
+}
+
+.provider-config label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.provider-config label span {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.provider-config input {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-family: monospace;
+}
+
+.provider-config input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.provider-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .provider-section {
   margin-bottom: 20px;
 }
@@ -291,6 +369,122 @@ body {
 .provider-section input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* readonly inputs */
+.provider-config input[readonly] {
+  opacity: 0.7;
+  cursor: default;
+}
+
+/* connection status */
+.connection-ok {
+  font-size: 0.8rem;
+  color: #27ae60;
+  padding: 6px 0;
+  margin-top: 4px;
+}
+
+.connection-error {
+  font-size: 0.8rem;
+  color: var(--danger);
+  padding: 6px 0;
+  margin-top: 4px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* provider config — extra buttons & groups */
+.provider-config .btn {
+  margin-bottom: 12px;
+}
+
+.provider-config select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.875rem;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M6 8L2 4h8z' fill='%238888a0'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+.provider-config select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.provider-config select option {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* saved profiles */
+.saved-profiles {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.saved-profiles h3 {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.profile-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.profile-item:hover {
+  border-color: var(--accent);
+}
+
+.profile-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.profile-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.profile-detail {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.profile-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* generic hidden */
+.hidden {
+  display: none !important;
 }
 
 /* ── Toast ───────────────────────────────── */

@@ -55,18 +55,19 @@ pub async fn delete_cartridge(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Cartridge not found".to_string())?;
 
-    // Remove from filesystem
-    let dir = PathBuf::from(&cartridge.directory_path);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove cartridge: {}", e))?;
-    }
-
-    // Remove from database (cascades to chats and messages)
+    // Remove from database first (cascades to chats and messages).
+    // If this fails, the filesystem is untouched — no partial state.
     state
         .repo
         .delete_cartridge(&id)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Remove from filesystem
+    let dir = PathBuf::from(&cartridge.directory_path);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("Failed to remove cartridge: {}", e))?;
+    }
 
     Ok(())
 }

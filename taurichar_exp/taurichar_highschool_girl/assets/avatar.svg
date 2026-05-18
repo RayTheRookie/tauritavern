@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <!-- Hair (dark brown) -->
+  <ellipse cx="100" cy="80" rx="70" ry="75" fill="#3d2b1f"/>
+  <ellipse cx="100" cy="75" rx="65" ry="70" fill="#4a3728"/>
+
+  <!-- Face -->
+  <ellipse cx="100" cy="85" rx="50" ry="55" fill="#fdd9b5"/>
+
+  <!-- Hair bangs -->
+  <ellipse cx="85" cy="55" rx="35" ry="20" fill="#3d2b1f"/>
+  <ellipse cx="115" cy="55" rx="35" ry="20" fill="#3d2b1f"/>
+  <ellipse cx="100" cy="50" rx="30" ry="18" fill="#4a3728"/>
+
+  <!-- Side hair -->
+  <ellipse cx="52" cy="100" rx="14" ry="50" fill="#3d2b1f"/>
+  <ellipse cx="148" cy="100" rx="14" ry="50" fill="#3d2b1f"/>
+
+  <!-- Eyes -->
+  <ellipse cx="82" cy="82" rx="10" ry="11" fill="white"/>
+  <ellipse cx="118" cy="82" rx="10" ry="11" fill="white"/>
+  <ellipse cx="84" cy="82" rx="6" ry="7" fill="#2c1810"/>
+  <ellipse cx="120" cy="82" rx="6" ry="7" fill="#2c1810"/>
+  <!-- Eye highlights -->
+  <circle cx="87" cy="79" r="2.5" fill="white"/>
+  <circle cx="123" cy="79" r="2.5" fill="white"/>
+
+  <!-- Eyebrows -->
+  <path d="M70 70 Q82 65 90 72" stroke="#2c1810" stroke-width="2" fill="none"/>
+  <path d="M110 72 Q118 65 130 70" stroke="#2c1810" stroke-width="2" fill="none"/>
+
+  <!-- Nose -->
+  <path d="M100 82 L98 92 L102 92" stroke="#e8b896" stroke-width="1.5" fill="none"/>
+
+  <!-- Mouth (gentle smile) -->
+  <path d="M88 102 Q100 112 112 102" stroke="#c97a6a" stroke-width="2" fill="#e89090" fill-opacity="0.3"/>
+
+  <!-- Blush -->
+  <ellipse cx="70" cy="95" rx="10" ry="6" fill="#f0b0b0" opacity="0.35"/>
+  <ellipse cx="130" cy="95" rx="10" ry="6" fill="#f0b0b0" opacity="0.35"/>
+
+  <!-- School uniform collar -->
+  <path d="M75 140 L100 125 L125 140" fill="white" stroke="#ccc" stroke-width="1"/>
+  <path d="M75 140 L65 170 L100 155" fill="#1a1a4e" stroke="#111" stroke-width="0.5"/>
+  <path d="M125 140 L135 170 L100 155" fill="#1a1a4e" stroke="#111" stroke-width="0.5"/>
+
+  <!-- Ribbon -->
+  <path d="M90 137 L100 145 L110 137" fill="#d44" stroke="#a33" stroke-width="0.5"/>
+
+  <!-- Hair accessory (simple clip) -->
+  <circle cx="140" cy="70" r="6" fill="#f8a0c0"/>
+  <circle cx="140" cy="70" r="3" fill="#fdd"/>
+</svg>

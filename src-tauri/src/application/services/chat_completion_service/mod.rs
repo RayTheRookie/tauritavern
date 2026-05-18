@@ -16,7 +16,7 @@ pub async fn handle_chat(
     chat_id: &str,
     user_message: &str,
     window: &tauri::Window,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let cartridge = state
         .repo
         .get_cartridge(cartridge_id)
@@ -64,17 +64,38 @@ pub async fn handle_chat(
     .await?;
     let messages = rendered.messages;
 
-    // Get API key from OS credential store
-    let provider = preset
-        .provider
-        .clone()
-        .unwrap_or_else(|| "openai".to_string());
-    let api_key = CredentialService::get(&provider)?
-        .ok_or_else(|| format!("API key not set for provider '{}'", provider))?;
+    // Resolve provider, model, key, and URL — active profile overrides preset
+    let active_pid = state.active_profile_id.lock().unwrap().clone();
+    let (provider, model, api_key, api_url_override) =
+        resolve_chat_config(state, &preset, active_pid.as_deref()).await?;
+
+    // Apply active profile overrides to preset for the request
+    let preset = crate::application::dto::PresetConfig {
+        provider: Some(provider.clone()),
+        model: Some(model),
+        provider_url: api_url_override.clone(),
+        ..preset
+    };
 
     // Stream from LLM
     let client = LlmHttpClient::new();
-    let mut stream = client.stream_chat(&preset, &messages, &api_key);
+    let api_url_ref = &api_url_override;
+    let stream_url = crate::infrastructure::provider_registry::resolve_url(
+        &provider,
+        api_url_ref,
+        api_url_ref,
+    );
+    let total_input_chars: usize = messages.iter().map(|m| m.content.chars().count()).sum();
+    log::info!(
+        "→ API request: provider={} model={} url={} messages={} input_chars={}",
+        provider,
+        preset.model.as_deref().unwrap_or("?"),
+        stream_url,
+        messages.len(),
+        total_input_chars,
+    );
+
+    let mut stream = client.stream_chat(&preset, &messages, &api_key, api_url_ref);
 
     let mut full_response = String::new();
     let response_msg_id = Uuid::new_v4().to_string();
@@ -109,6 +130,13 @@ pub async fn handle_chat(
         }
     }
 
+    let output_chars = full_response.chars().count();
+    log::info!(
+        "← API response: output_chars={} (est. ~{} tokens)",
+        output_chars,
+        output_chars / 2  // rough: CJK ~1 char/token, EN ~4 char/token → avg ~2
+    );
+
     // Save assistant response
     state
         .repo
@@ -128,7 +156,7 @@ pub async fn handle_chat(
         chat_id.to_string(),
         response_msg_id,
         user_message.to_string(),
-        full_response,
+        full_response.clone(),
     );
 
     // Emit done
@@ -142,7 +170,80 @@ pub async fn handle_chat(
         },
     );
 
-    Ok(())
+    Ok(full_response)
+}
+
+async fn resolve_chat_config(
+    state: &AppState,
+    preset: &crate::application::dto::PresetConfig,
+    active_pid: Option<&str>,
+) -> Result<(String, String, String, Option<String>), String> {
+    // Try active profile first
+    let skip_reason;
+
+    if let Some(pid) = active_pid {
+        match state.repo.get_profile(pid).await {
+            Ok(Some(profile)) => match CredentialService::get(&state.repo, &profile.provider_id).await {
+                Ok(Some(key)) => {
+                    log::info!(
+                        "Using active profile '{}' ({} / {})",
+                        profile.name,
+                        profile.provider_id,
+                        profile.model
+                    );
+                    return Ok((
+                        profile.provider_id,
+                        profile.model,
+                        key,
+                        profile.api_url,
+                    ));
+                }
+                Ok(None) => {
+                    skip_reason = Some(format!(
+                        "Active profile '{}' has no API key for '{}' in the credential store. Re-configure your API key.",
+                        profile.name, profile.provider_id
+                    ));
+                }
+                Err(e) => {
+                    skip_reason = Some(format!(
+                        "Active profile '{}' keyring read error for '{}': {}",
+                        profile.name, profile.provider_id, e
+                    ));
+                }
+            },
+            Ok(None) => {
+                skip_reason = Some(format!(
+                    "Active profile ID '{}' not found in database (may have been deleted)",
+                    pid
+                ));
+            }
+            Err(e) => {
+                skip_reason = Some(format!("Database error reading active profile: {}", e));
+            }
+        }
+    } else {
+        skip_reason = Some("No active profile selected. Use Settings to select one.".to_string());
+    }
+
+    // Fall back to preset config
+    let provider = preset
+        .provider
+        .clone()
+        .unwrap_or_else(|| "openai".to_string());
+    let key = CredentialService::get(&state.repo, &provider).await?
+        .ok_or_else(|| {
+            let hint = skip_reason.unwrap_or_else(|| "unknown reason".to_string());
+            format!(
+                "Active profile skipped ({})\n  → Fallback provider '{}' has no API key configured.\n  → Go to Settings → select a provider → Fetch Models → Connect to create a profile, then click it to activate.",
+                hint, provider
+            )
+        })?;
+    let url = CredentialService::get_url(&state.repo, &provider).await.unwrap_or(None);
+    let model = preset
+        .model
+        .clone()
+        .unwrap_or_else(|| "gpt-4o".to_string());
+    Ok((provider, model, key, url))
 }
 
 pub async fn dry_run_prompt_pipeline(

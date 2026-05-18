@@ -52,3 +52,12 @@ CREATE INDEX IF NOT EXISTS idx_rag_memories_cartridge_source
 
 CREATE INDEX IF NOT EXISTS idx_rag_memories_chat
     ON rag_memories(chat_id);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    api_url TEXT,
+    created_at TEXT NOT NULL
+);

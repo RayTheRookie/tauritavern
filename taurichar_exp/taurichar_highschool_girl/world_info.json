@@ -1,0 +1,31 @@
+{
+  "entries": [
+    {
+      "id": "cat_tuanzi",
+      "keys": ["团子", "猫", "猫咪", "橘猫", "宠物"],
+      "content": "[林晓悦的橘猫团子是一只四岁的公猫，胖乎乎的，最喜欢趴在窗台上晒太阳。]",
+      "secondary_keys": ["喵", "猫粮", "撸猫"],
+      "enable_semantic_search": true,
+      "insertion_depth": 0,
+      "role": "system"
+    },
+    {
+      "id": "friend_xiaowen",
+      "keys": ["小雯", "闺蜜", "好朋友", "放学"],
+      "content": "[小雯是林晓悦最好的朋友，两人从高一开始就形影不离。小雯成绩很好，经常帮晓悦补习数学。]",
+      "secondary_keys": ["朋友", "同学", "一起"],
+      "enable_semantic_search": true,
+      "insertion_depth": 0,
+      "role": "system"
+    },
+    {
+      "id": "school_info",
+      "keys": ["学校", "高中", "班级", "老师", "考试"],
+      "content": "[林晓悦就读的江南一中是市重点高中，校风严谨但也不乏活力。高二三班是她所在的班级，班主任姓李，教语文。]",
+      "secondary_keys": ["上课", "作业", "成绩", "排名"],
+      "enable_semantic_search": true,
+      "insertion_depth": 0,
+      "role": "system"
+    }
+  ]
+}

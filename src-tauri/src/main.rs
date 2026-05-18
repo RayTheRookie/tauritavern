@@ -34,11 +34,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .execute(&pool)
         .await?;
 
+    // Avoid SQLITE_BUSY under concurrent access
+    sqlx::query("PRAGMA busy_timeout = 5000")
+        .execute(&pool)
+        .await?;
+
     // Run migrations
     infrastructure::database::run_migrations(&pool).await?;
 
     let repo = SqliteRepo::new(pool);
+
+    // Restore active profile from previous session
+    let active_profile_id = repo
+        .get_setting("active_profile_id")
+        .await
+        .ok()
+        .flatten();
+
     let app_state = AppState::new(repo, data_dir.clone());
+    if let Some(ref pid) = active_profile_id {
+        *app_state.active_profile_id.lock().unwrap() = Some(pid.clone());
+    }
 
     let protocol_data_dir = data_dir.clone();
 
@@ -55,9 +71,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             presentation::commands::library_commands::open_cartridge,
             presentation::commands::library_commands::get_cartridge_cover,
             presentation::commands::settings_commands::get_api_key,
+            presentation::commands::settings_commands::get_raw_api_key,
             presentation::commands::settings_commands::set_api_key,
             presentation::commands::settings_commands::delete_api_key,
             presentation::commands::settings_commands::get_all_api_keys,
+            presentation::commands::settings_commands::get_providers,
+            presentation::commands::settings_commands::get_provider_url,
+            presentation::commands::settings_commands::set_provider_url,
+            presentation::commands::settings_commands::fetch_models,
+            presentation::commands::settings_commands::test_connection,
+            presentation::commands::settings_commands::save_profile,
+            presentation::commands::settings_commands::list_profiles,
+            presentation::commands::settings_commands::delete_profile,
+            presentation::commands::settings_commands::set_active_profile,
+            presentation::commands::settings_commands::get_active_profile,
+            presentation::commands::settings_commands::diagnose,
+            presentation::commands::settings_commands::view_profile,
+            presentation::commands::settings_commands::check_keyring,
             presentation::commands::chat_commands::send_chat,
             presentation::commands::chat_commands::dry_run_prompt_pipeline,
             presentation::commands::chat_commands::create_chat,
@@ -119,7 +149,8 @@ fn handle_tavern_protocol(
     let path = path.trim_start_matches('/');
 
     // SDK endpoint — served from compile-time embedded content
-    if path.starts_with("sdk/") || path == "sdk" || path == "tauri-tavern-sdk.js" {
+    // Matches: /sdk, /sdk/, /tauri-tavern-sdk.js, /cartridge/*/tauri-tavern-sdk.js
+    if path.starts_with("sdk/") || path == "sdk" || path.ends_with("/tauri-tavern-sdk.js") {
         return tauri::http::Response::builder()
             .status(200)
             .header("Content-Type", "application/javascript")
@@ -132,7 +163,10 @@ fn handle_tavern_protocol(
     if let Some(rest) = path.strip_prefix("cartridge/") {
         let mut parts = rest.splitn(2, '/');
         let cartridge_id = parts.next().unwrap_or("");
-        let file_path = parts.next().unwrap_or("ui/index.html");
+        let file_path = match parts.next() {
+            Some("") | None => "ui/index.html",
+            Some(p) => p,
+        };
 
         if cartridge_id.is_empty() {
             return tauri::http::Response::builder()
@@ -199,18 +233,26 @@ fn guess_content_type(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("html") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
-        Some("js") => "application/javascript; charset=utf-8",
+        Some("js") | Some("mjs") => "application/javascript; charset=utf-8",
         Some("json") => "application/json; charset=utf-8",
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
         Some("webp") => "image/webp",
         Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
         Some("mp3") => "audio/mpeg",
         Some("wav") => "audio/wav",
         Some("ogg") => "audio/ogg",
         Some("mp4") => "video/mp4",
         Some("webm") => "video/webm",
+        Some("wasm") => "application/wasm",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("txt") => "text/plain; charset=utf-8",
+        Some("xml") => "application/xml; charset=utf-8",
         _ => "application/octet-stream",
     }
 }

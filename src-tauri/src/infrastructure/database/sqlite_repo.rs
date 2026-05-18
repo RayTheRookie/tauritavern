@@ -45,6 +45,16 @@ pub struct RagMemoryRow {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ProfileRow {
+    pub id: String,
+    pub name: String,
+    pub provider_id: String,
+    pub model: String,
+    pub api_url: Option<String>,
+    pub created_at: String,
+}
+
 #[derive(Clone)]
 pub struct SqliteRepo {
     pool: SqlitePool,
@@ -270,5 +280,68 @@ impl SqliteRepo {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    // ── Profiles ────────────────────────────────────────────────
+
+    pub async fn insert_profile(&self, p: &ProfileRow) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO profiles (id, name, provider_id, model, api_url, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&p.id)
+        .bind(&p.name)
+        .bind(&p.provider_id)
+        .bind(&p.model)
+        .bind(&p.api_url)
+        .bind(&p.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_profiles(&self) -> Result<Vec<ProfileRow>, sqlx::Error> {
+        sqlx::query_as::<_, ProfileRow>(
+            "SELECT id, name, provider_id, model, api_url, created_at FROM profiles ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn get_profile(&self, id: &str) -> Result<Option<ProfileRow>, sqlx::Error> {
+        sqlx::query_as::<_, ProfileRow>(
+            "SELECT id, name, provider_id, model, api_url, created_at FROM profiles WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn delete_profile(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM profiles WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ── Settings key-value ───────────────────────────────────
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+            .bind(key)
+            .bind(value)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM settings WHERE key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| r.0))
     }
 }

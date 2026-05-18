@@ -1,0 +1,9 @@
+{
+  "context_strategy": {
+    "max_context_tokens": 8000,
+    "rag_fetch_count": 2,
+    "rag_similarity_threshold": 0.7,
+    "history_fetch_limit": 100
+  },
+  "regex_mutators": []
+}

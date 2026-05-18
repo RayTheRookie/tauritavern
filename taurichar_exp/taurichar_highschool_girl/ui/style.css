@@ -1,0 +1,332 @@
+/* ── Galgame Style — 林晓悦 ────────────────── */
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --dialog-bg: rgba(20, 18, 30, 0.88);
+  --dialog-border: rgba(255, 255, 255, 0.12);
+  --name-tag: #f0a0c0;
+  --text: #f0e8f0;
+  --text-muted: #a098b0;
+  --accent: #e890b0;
+  --input-bg: rgba(30, 26, 44, 0.9);
+}
+
+body {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  height: 100vh;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ── Background ───────────────────────────── */
+
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  background:
+    linear-gradient(180deg, #1a1830 0%, #2d2848 30%, #3d3860 60%, #1a1830 100%);
+  z-index: 0;
+}
+
+.bg-layer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(240, 160, 192, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse at 70% 60%, rgba(160, 140, 220, 0.06) 0%, transparent 60%),
+    radial-gradient(ellipse at 40% 80%, rgba(100, 180, 220, 0.04) 0%, transparent 50%);
+}
+
+/* ── Character Sprite ─────────────────────── */
+
+.sprite-area {
+  position: fixed;
+  left: 50%;
+  bottom: 240px;
+  transform: translateX(-50%);
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(-8px); }
+}
+
+.sprite-img {
+  font-size: 120px;
+  filter: drop-shadow(0 8px 24px rgba(240, 160, 192, 0.3));
+  line-height: 1;
+}
+
+.sprite-label {
+  font-size: 0.85rem;
+  color: var(--name-tag);
+  letter-spacing: 0.15em;
+  text-shadow: 0 0 12px rgba(240, 160, 192, 0.4);
+}
+
+/* ── Dialog Box ───────────────────────────── */
+
+.dialog-box {
+  position: fixed;
+  left: 50%;
+  bottom: 130px;
+  transform: translateX(-50%);
+  width: min(680px, 92vw);
+  min-height: 110px;
+  background: var(--dialog-bg);
+  border: 1px solid var(--dialog-border);
+  border-radius: 12px;
+  padding: 20px 24px 18px;
+  z-index: 2;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.dialog-name-tag {
+  position: absolute;
+  top: -14px;
+  left: 20px;
+  background: var(--name-tag);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 3px 14px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+}
+
+.dialog-text {
+  font-size: 1rem;
+  color: var(--text);
+  line-height: 1.8;
+  min-height: 56px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.dialog-hint {
+  position: absolute;
+  right: 16px;
+  bottom: 8px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  animation: blink 1.4s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+/* ── Input Bar ────────────────────────────── */
+
+.input-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  width: min(680px, 92vw);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--input-bg);
+  border: 1px solid var(--dialog-border);
+  border-radius: 10px;
+  z-index: 2;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.user-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.95rem;
+  padding: 6px 4px;
+  outline: none;
+}
+
+.user-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.btn-send {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: all 0.2s;
+}
+
+.btn-send:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-send:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.streaming-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse 0.8s ease-in-out infinite;
+}
+
+.streaming-dot.hidden {
+  display: none;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+
+/* ── Bottom Bar ───────────────────────────── */
+
+.bottom-bar {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  z-index: 3;
+}
+
+.bar-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 6px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: inherit;
+}
+
+.bar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+/* ── History Panel ────────────────────────── */
+
+.history-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: rgba(10, 8, 20, 0.95);
+  display: flex;
+  flex-direction: column;
+}
+
+.history-panel.hidden {
+  display: none;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  font-size: 0.95rem;
+  flex-shrink: 0;
+}
+
+.history-header button {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.history-header button:hover {
+  color: var(--text);
+}
+
+.history-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.history-msg {
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  max-width: 80%;
+}
+
+.history-msg.user {
+  align-self: flex-end;
+  background: rgba(240, 160, 192, 0.12);
+  color: var(--text);
+  border-bottom-right-radius: 2px;
+}
+
+.history-msg.assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom-left-radius: 2px;
+}
+
+/* ── Scrollbar ────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}

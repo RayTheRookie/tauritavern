@@ -4,8 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>TauriTavern Console</title>
-  <script type="module" crossorigin src="/assets/index-BNldJzqs.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-CaIpA_yN.css">
+  <script type="module" crossorigin src="/assets/index-j_7A1_6U.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-tkU41fw-.css">
 </head>
 <body>
   <div id="app">
@@ -34,21 +34,27 @@
           <button id="btn-close-settings" class="btn btn-ghost">&times;</button>
         </div>
         <div class="modal-body">
-          <div class="provider-section">
-            <h3>Anthropic</h3>
+          <div class="provider-selector">
             <label>
-              <span>API Key</span>
-              <input type="password" id="api-key-anthropic" placeholder="sk-ant-..." data-placeholder="sk-ant-..." />
+              <span>Provider</span>
+              <select id="provider-dropdown">
+                <option value="">-- Select Provider --</option>
+              </select>
             </label>
-            <button class="btn btn-sm btn-primary" data-provider="anthropic">Save</button>
           </div>
-          <div class="provider-section">
-            <h3>OpenAI / Compatible</h3>
+          <div id="provider-config" class="provider-config hidden">
             <label>
               <span>API Key</span>
-              <input type="password" id="api-key-openai" placeholder="sk-..." data-placeholder="sk-..." />
+              <input type="password" id="api-key-input" placeholder="" />
             </label>
-            <button class="btn btn-sm btn-primary" data-provider="openai">Save</button>
+            <label id="provider-url-group" class="hidden">
+              <span>API URL</span>
+              <input type="text" id="provider-url-input" placeholder="https://api.example.com/v1/chat/completions" />
+            </label>
+            <div class="provider-actions">
+              <button id="btn-save-provider" class="btn btn-sm btn-primary">Save</button>
+              <button id="btn-delete-provider" class="btn btn-sm btn-ghost">Delete Key</button>
+            </div>
           </div>
         </div>
       </div>

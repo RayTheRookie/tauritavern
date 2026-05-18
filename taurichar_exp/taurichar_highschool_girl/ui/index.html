@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Chinese High School Girl — 林晓悦</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="../tauri-tavern-sdk.js"></script>
+  <script defer src="script.js"></script>
+</head>
+<body>
+  <!-- Background layer -->
+  <div class="bg-layer"></div>
+
+  <!-- Character sprite -->
+  <div class="sprite-area" id="sprite-area">
+    <div class="sprite-img">&#x1F338;</div>
+    <div class="sprite-label">林晓悦</div>
+  </div>
+
+  <!-- Dialog box (AI speech) -->
+  <div class="dialog-box" id="dialog-box">
+    <div class="dialog-name-tag" id="dialog-name-tag">林晓悦</div>
+    <div class="dialog-text" id="dialog-text">
+      嗨！我是林晓悦，高二三班的学生～<br>今天学校发生的事想跟你聊聊呢 (｡･ω･｡)
+    </div>
+    <div class="dialog-hint" id="dialog-hint">按 Enter 发送 ···</div>
+  </div>
+
+  <!-- User input area -->
+  <div class="input-bar" id="input-bar">
+    <input
+      type="text"
+      id="user-input"
+      class="user-input"
+      placeholder="说点什么吧..."
+      autofocus
+    />
+    <button id="btn-send" class="btn-send" title="发送">&#9654;</button>
+    <div class="streaming-dot hidden" id="streaming-dot"></div>
+  </div>
+
+  <!-- Bottom bar -->
+  <div class="bottom-bar">
+    <button id="btn-history" class="bar-btn">记录</button>
+    <button id="btn-new-chat" class="bar-btn">新对话</button>
+  </div>
+
+  <!-- Message history panel -->
+  <div id="history-panel" class="history-panel hidden">
+    <div class="history-header">
+      <span>聊天记录</span>
+      <button id="btn-close-history">&times;</button>
+    </div>
+    <div id="history-content" class="history-content"></div>
+  </div>
+</body>
+</html>

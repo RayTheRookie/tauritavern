@@ -23,7 +23,5 @@
       "csp": "default-src 'self'; img-src 'self' asset: https: data:; media-src 'self' asset:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' https:;"
     }
   },
-  "plugins": {
-    "dialog": {}
-  }
+  "plugins": {}
 }

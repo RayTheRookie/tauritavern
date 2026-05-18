@@ -15,7 +15,7 @@ pub async fn send_chat(
     cartridge_id: String,
     chat_id: String,
     message: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     chat_completion_service::handle_chat(&state, &cartridge_id, &chat_id, &message, &window).await
 }
 

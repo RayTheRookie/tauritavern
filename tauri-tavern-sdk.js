@@ -37,8 +37,11 @@
   }
 
   function getListen() {
-    if (typeof window !== "undefined" && window.__TAURI__) {
+    if (typeof window !== "undefined" && window.__TAURI__?.event?.listen) {
       return window.__TAURI__.event.listen;
+    }
+    if (typeof window !== "undefined" && window.__TAURI_INTERNALS__?.event?.listen) {
+      return window.__TAURI_INTERNALS__.event.listen;
     }
     throw new Error("Tauri events not available.");
   }
@@ -125,58 +128,27 @@
     },
 
     /**
-     * Send a message and receive a streaming response.
+     * Send a message and receive the full response.
      * @param {string} chatId
      * @param {string} message - The user's message.
-     * @param {function(string):void} onChunk - Called with each text chunk.
-     * @param {function():void} [onDone] - Called when the stream completes.
+     * @param {function(string):void} onChunk - Called with the full response text.
+     * @param {function():void} [onDone] - Called when complete.
      * @param {function(string):void} [onError] - Called on error.
      * @returns {Promise<void>}
      */
     async sendMessage(chatId, message, onChunk, onDone, onError) {
       const invoke = getInvoke();
-      const listen = getListen();
       const cartridgeId = getCartridgeIdFromUrl();
 
-      let unlistened = false;
-
-      const doUnlisten = () => {
-        if (!unlistened) {
-          unlistened = true;
-          unlisten();
-        }
-      };
-
-      // Set up the event listener before sending
-      const unlisten = await listen("chat-chunk", (event) => {
-        const payload = event.payload;
-
-        // Only handle events for this chat
-        if (payload.chat_id !== chatId) return;
-
-        if (payload.error) {
-          if (onError) onError(payload.content);
-          doUnlisten();
-          return;
-        }
-
-        if (payload.done) {
-          if (onDone) onDone();
-          doUnlisten();
-          return;
-        }
-
-        if (onChunk) onChunk(payload.content);
-      });
-
       try {
-        await invoke("send_chat", {
+        const response = await invoke("send_chat", {
           cartridgeId,
           chatId,
           message,
         });
+        if (onChunk) onChunk(response);
+        if (onDone) onDone();
       } catch (e) {
-        doUnlisten();
         if (onError) onError(String(e));
       }
     },

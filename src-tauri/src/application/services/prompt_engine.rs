@@ -9,9 +9,7 @@ use crate::infrastructure::database::{MessageRow, RagMemoryRow, SqliteRepo};
 use crate::infrastructure::fs;
 use chrono::Utc;
 use regex::Regex;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -738,12 +736,21 @@ fn add_feature(vector: &mut [f32], feature: &str) {
         return;
     }
 
-    let mut hasher = DefaultHasher::new();
-    feature.hash(&mut hasher);
-    let hash = hasher.finish();
+    // Deterministic FNV-1a 64-bit — stable across process restarts,
+    // unlike DefaultHasher which uses per-process random SipHash keys.
+    let hash = fnv1a_64(feature);
     let index = (hash as usize) % vector.len();
     let sign = if (hash >> 63) == 0 { 1.0 } else { -1.0 };
     vector[index] += sign;
+}
+
+fn fnv1a_64(data: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in data.bytes() {
+        h ^= byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 fn normalize_vector(mut vector: Vec<f32>) -> Vec<f32> {

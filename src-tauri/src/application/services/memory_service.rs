@@ -17,6 +17,26 @@ pub fn count_tokens(text: &str, model: &str) -> usize {
         return char_based_count(text);
     }
 
+    if model_lower.starts_with("gemini-") || model_lower.starts_with("gemma") {
+        return char_based_count(text);
+    }
+
+    if model_lower.starts_with("glm-") || model_lower.starts_with("chatglm") {
+        return char_based_count(text);
+    }
+
+    if model_lower.starts_with("deepseek") {
+        return char_based_count(text);
+    }
+
+    if model_lower.starts_with("qwen") {
+        return char_based_count(text);
+    }
+
+    if model_lower.starts_with("grok") {
+        return char_based_count(text);
+    }
+
     tiktoken_count(text, "gpt-4")
 }
 

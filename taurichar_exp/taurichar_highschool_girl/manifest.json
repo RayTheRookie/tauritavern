@@ -1,0 +1,8 @@
+{
+  "name": "Chinese High School Girl",
+  "author": "TauriTavern",
+  "version": "1.0.0",
+  "description": "A relatable Chinese high school girl — chat about school life, dreams, and daily adventures.",
+  "entry_file": "ui/index.html",
+  "cover_image": "assets/avatar.svg"
+}
