@@ -749,9 +749,31 @@ fn apply_macros_to_message(mut message: ChatMessage, vars: &MacroVars) -> ChatMe
 }
 
 fn apply_macros(text: &str, vars: &MacroVars) -> String {
-    text.replace("{{user}}", &vars.user_name)
-        .replace("{{char}}", &vars.char_name)
-        .replace("{{input}}", &vars.input)
+    let replacements = [
+        ("{{user}}", vars.user_name.as_str()),
+        ("{{User}}", vars.user_name.as_str()),
+        ("{{USER}}", vars.user_name.as_str()),
+        ("<user>", vars.user_name.as_str()),
+        ("<User>", vars.user_name.as_str()),
+        ("<USER>", vars.user_name.as_str()),
+        ("{{char}}", vars.char_name.as_str()),
+        ("{{Char}}", vars.char_name.as_str()),
+        ("{{CHAR}}", vars.char_name.as_str()),
+        ("<char>", vars.char_name.as_str()),
+        ("<Char>", vars.char_name.as_str()),
+        ("<CHAR>", vars.char_name.as_str()),
+        ("{{input}}", vars.input.as_str()),
+        ("{{Input}}", vars.input.as_str()),
+        ("{{INPUT}}", vars.input.as_str()),
+        ("<input>", vars.input.as_str()),
+        ("<Input>", vars.input.as_str()),
+        ("<INPUT>", vars.input.as_str()),
+    ];
+    let mut output = text.to_string();
+    for (from, to) in replacements {
+        output = output.replace(from, to);
+    }
+    output
 }
 
 fn world_entry_identity(cartridge_id: &str, entry: &WorldEntry) -> String {
@@ -1012,6 +1034,20 @@ mod tests {
         assert_eq!(world_position(&entry), "in_chat");
         entry.position = "top".to_string();
         assert_eq!(world_position(&entry), "relative");
+    }
+
+    #[test]
+    fn sillytavern_macros_are_replaced() {
+        let vars = MacroVars {
+            user_name: "Alice".to_string(),
+            char_name: "Soyo".to_string(),
+            input: "hello".to_string(),
+        };
+
+        assert_eq!(
+            apply_macros("<user> meets <char>: {{input}} / {{User}} / <CHAR>", &vars),
+            "Alice meets Soyo: hello / Alice / Soyo"
+        );
     }
 
     fn injection(label: &str, role: &str, depth: usize, order: i32, seq: usize) -> PromptInjection {

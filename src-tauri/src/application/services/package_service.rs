@@ -429,15 +429,23 @@ fn extract_character_book_entries(data: &Value) -> Vec<WorldEntry> {
         .enumerate()
         .filter_map(|(idx, entry)| {
             let content = get_string(entry, "content")?;
+            let is_constant = entry
+                .get("constant")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let mut keys = string_array(entry, "keys")
+                .or_else(|| string_array(entry, "key"))
+                .unwrap_or_default();
+            if is_constant && keys.is_empty() {
+                keys.push("*".to_string());
+            }
             Some(WorldEntry {
                 id: get_string(entry, "id").or_else(|| Some(format!("st_world_{}", idx + 1))),
                 enabled: !entry
                     .get("disable")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                keys: string_array(entry, "keys")
-                    .or_else(|| string_array(entry, "key"))
-                    .unwrap_or_default(),
+                keys,
                 content,
                 secondary_keys: string_array(entry, "secondary_keys").unwrap_or_default(),
                 enable_semantic_search: false,
@@ -478,6 +486,11 @@ fn extract_display_regex_mutators(data: &Value) -> Vec<RegexMutator> {
                 .or_else(|| script.get("disable"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
+                || script
+                    .get("promptOnly")
+                    .or_else(|| script.get("prompt_only"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
             {
                 return None;
             }
@@ -583,10 +596,10 @@ const CLASSIC_INDEX: &str = r#"<!doctype html>
         </div>
         <button id="toggle-lore">Card</button>
       </header>
-      <section id="messages" class="messages"></section>
+      <section id="chat" class="messages"><div id="messages" class="messages-inner"></div></section>
       <footer class="composer">
-        <textarea id="input" rows="1" placeholder="Send a message..."></textarea>
-        <button id="send">Send</button>
+        <textarea id="send_textarea" rows="1" placeholder="Send a message..."></textarea>
+        <button id="send_but">Send</button>
       </footer>
     </main>
     <aside id="lore" class="right">
@@ -608,10 +621,49 @@ let currentChat = null;
 let busy = false;
 
 const el = (id) => document.getElementById(id);
+const inputEl = () => el("send_textarea") || el("input");
+const sendButtonEl = () => el("send_but") || el("send");
+
+const event_types = {
+  APP_READY: "app_ready",
+  CHAT_CHANGED: "chat_changed",
+  MESSAGE_SENT: "message_sent",
+  MESSAGE_RECEIVED: "message_received",
+  USER_MESSAGE_RENDERED: "user_message_rendered",
+  CHARACTER_MESSAGE_RENDERED: "character_message_rendered",
+  GENERATION_STARTED: "generation_started",
+  GENERATION_ENDED: "generation_ended",
+};
+const eventSource = createEventSource();
+
+window.event_types = event_types;
+window.eventSource = eventSource;
+window.triggerSlash = handleGuiCommand;
+window.getContext = getContext;
+window.SillyTavern = { getContext, eventSource, event_types };
+window.TavernHelper = {
+  setInput: (text) => setInputText(text),
+  appendInput: (text) => appendInputText(text),
+  send: (text) => text == null ? send() : sendText(text),
+};
+window.toastr = {
+  info: console.info.bind(console),
+  success: console.info.bind(console),
+  warning: console.warn.bind(console),
+  error: console.error.bind(console),
+};
 
 window.addEventListener("message", (event) => {
   if (event.data?.type === "tt-classic-command") {
     handleGuiCommand(event.data.command);
+  } else if (event.data?.type === "tt-classic-input") {
+    if (event.data.mode === "append") appendInputText(event.data.text);
+    else setInputText(event.data.text);
+    if (event.data.send) send();
+  } else if (event.data?.type === "tt-classic-resize") {
+    resizeGuiFrame(event.source, event.data.height);
+  } else if (event.data?.type === "tt-classic-event") {
+    eventSource.emit(event.data.name, ...(event.data.args || []));
   }
 });
 
@@ -619,19 +671,19 @@ init();
 
 async function init() {
   card = await fetch("card-data.json").then((r) => r.json());
-  pipeline = await fetch("../pipeline.json").then((r) => r.json()).catch(() => ({ regex_mutators: [] }));
+  pipeline = await loadPipeline();
   el("char-name").textContent = card.name;
   el("top-name").textContent = card.name;
   el("char-desc").textContent = card.description || card.creator_notes || "";
   el("personality").textContent = card.personality || "";
   el("scenario").textContent = card.scenario || "";
   el("examples").textContent = card.mes_example || "";
-  el("avatar").src = SDK.getAssetUrl("assets/avatar.png");
+  loadAvatar();
 
   el("new-chat").addEventListener("click", newChat);
-  el("send").addEventListener("click", send);
+  sendButtonEl().addEventListener("click", send);
   el("toggle-lore").addEventListener("click", () => el("lore").classList.toggle("hidden"));
-  el("input").addEventListener("keydown", (event) => {
+  inputEl().addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       send();
@@ -640,6 +692,19 @@ async function init() {
 
   await loadChats();
   if (!currentChat) await newChat();
+  eventSource.emit(event_types.APP_READY);
+}
+
+async function loadPipeline() {
+  const loaded = await fetch("../pipeline.json").then((r) => r.json()).catch(() => ({ regex_mutators: [] }));
+  loaded.regex_mutators = Array.isArray(loaded.regex_mutators) ? loaded.regex_mutators : [];
+  const rawCard = await fetch("../sillytavern_card.json").then((r) => r.json()).catch(() => null);
+  for (const mutator of extractSillyTavernRegexScripts(rawCard)) {
+    if (!loaded.regex_mutators.some((item) => item.id === mutator.id && item.pattern === mutator.pattern)) {
+      loaded.regex_mutators.push(mutator);
+    }
+  }
+  return loaded;
 }
 
 async function loadChats() {
@@ -690,9 +755,9 @@ function renderWelcome() {
 
 async function send() {
   if (busy || !currentChat) return;
-  const text = el("input").value.trim();
+  const text = inputEl().value.trim();
   if (!text) return;
-  el("input").value = "";
+  inputEl().value = "";
   await sendText(text);
 }
 
@@ -701,8 +766,11 @@ async function sendText(text) {
   const message = String(text || "").trim();
   if (!message) return;
   addMessage("user", message);
+  eventSource.emit(event_types.MESSAGE_SENT, message);
+  eventSource.emit(event_types.USER_MESSAGE_RENDERED, message);
   const assistant = addMessage("assistant", "...");
   busy = true;
+  eventSource.emit(event_types.GENERATION_STARTED);
   try {
     await SDK.sendMessage(
       currentChat.id,
@@ -711,44 +779,97 @@ async function sendText(text) {
       () => {},
       (error) => replaceMessageContent(assistant, "assistant", `Error: ${error}`),
     );
+    eventSource.emit(event_types.MESSAGE_RECEIVED, assistant.textContent || "");
+    eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, assistant.textContent || "");
   } finally {
     busy = false;
+    eventSource.emit(event_types.GENERATION_ENDED);
     await loadChats();
   }
 }
 
 function handleGuiCommand(command) {
   const raw = String(command || "").trim();
-  const sendMatch = raw.match(/\/send\s+([\s\S]*?)(?:\|\/trigger|$)/i);
-  const text = (sendMatch ? sendMatch[1] : raw).trim();
-  if (text) sendText(text);
+  if (!raw) return Promise.resolve();
+  const parts = raw.split(/\|(?=\/)/g).map((part) => part.trim()).filter(Boolean);
+  let pending = "";
+  let shouldTrigger = false;
+
+  for (const part of parts.length ? parts : [raw]) {
+    if (/^\/send\b/i.test(part)) {
+      pending = part.replace(/^\/send\b/i, "").trim();
+      shouldTrigger = true;
+    } else if (/^\/setinput\b/i.test(part)) {
+      pending = part.replace(/^\/setinput\b/i, "").trim();
+      setInputText(pending);
+    } else if (/^\/append\b/i.test(part)) {
+      const text = part.replace(/^\/append\b/i, "").trim();
+      appendInputText(text);
+      pending = inputEl().value.trim();
+    } else if (/^\/trigger\b/i.test(part) || /^\/gen\b/i.test(part)) {
+      shouldTrigger = true;
+    }
+  }
+
+  if (shouldTrigger) {
+    const text = pending || inputEl().value.trim();
+    if (text) return sendText(text);
+  }
+  return Promise.resolve();
 }
 
 function addMessage(role, content) {
   const div = document.createElement("div");
-  div.className = `message ${role}`;
+  div.className = `mes message ${role}`;
+  div.dataset.mesRole = role;
+  div.dataset.messageId = String(Date.now());
+  const text = document.createElement("div");
+  text.className = "mes_text";
+  div.appendChild(text);
   replaceMessageContent(div, role, content);
   el("messages").appendChild(div);
-  el("messages").scrollTop = el("messages").scrollHeight;
+  scrollChatToBottom();
   return div;
 }
 
 function replaceMessageContent(container, role, content) {
-  container.className = `message ${role}`;
-  container.replaceChildren();
-  const displayContent = role === "assistant" ? applyDisplayRegex(content) : String(content || "");
-  const guiHtml = role === "assistant" ? extractGuiHtml(displayContent) : null;
-  if (!guiHtml) {
-    container.textContent = displayContent;
-    return;
+  container.className = `mes message ${role}`;
+  container.dataset.mesRole = role;
+  let target = container.querySelector(".mes_text");
+  if (!target) {
+    target = document.createElement("div");
+    target.className = "mes_text";
+    container.replaceChildren(target);
   }
+  target.replaceChildren();
+  const rawContent = applySillyTavernMacros(String(content || ""));
+  const displayContent = role === "assistant" ? applySillyTavernMacros(applyDisplayRegex(rawContent)) : rawContent;
+  const parts = role === "assistant" ? splitDisplayParts(displayContent) : [{ type: "text", content: displayContent }];
+  const hasGui = parts.some((part) => part.type === "html");
+  container.classList.toggle("gui-message", hasGui);
 
-  container.classList.add("gui-message");
+  for (const part of parts) {
+    if (part.type === "html") appendGuiPart(target, part.content);
+    else appendTextPart(target, part.content);
+  }
+}
+
+function appendTextPart(target, content) {
+  const text = String(content || "");
+  if (!text.trim()) return;
+  const block = document.createElement("div");
+  block.className = "mes_plain";
+  block.textContent = text;
+  target.appendChild(block);
+}
+
+function appendGuiPart(target, html) {
   const iframe = document.createElement("iframe");
   iframe.className = "gui-frame";
   iframe.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-same-origin");
-  iframe.srcdoc = buildGuiSrcdoc(guiHtml);
-  container.appendChild(iframe);
+  iframe.setAttribute("scrolling", "no");
+  iframe.srcdoc = buildGuiSrcdoc(html);
+  target.appendChild(iframe);
 }
 
 function applyDisplayRegex(content) {
@@ -767,6 +888,26 @@ function applyDisplayRegex(content) {
   return output;
 }
 
+function extractSillyTavernRegexScripts(rawCard) {
+  const data = rawCard?.data || rawCard || {};
+  const scripts = data.extensions?.regex_scripts || data.regex_scripts || rawCard?.extensions?.regex_scripts || [];
+  if (!Array.isArray(scripts)) return [];
+  return scripts
+    .filter((script) => !(script.disabled || script.disable || script.promptOnly || script.prompt_only))
+    .map((script, index) => ({
+      id: script.scriptName || script.name || `st_display_regex_${index + 1}`,
+      enabled: true,
+      target: "display",
+      depth_range: [],
+      pattern: script.findRegex || script.find_regex || script.pattern || "",
+      replacement: script.replaceString || script.replacement || "",
+      flags: script.flags || "gs",
+      sample: script.sample || "",
+      description: script.description || "",
+    }))
+    .filter((script) => script.pattern);
+}
+
 function normalizeRegex(pattern, fallbackFlags) {
   const match = String(pattern || "").match(/^\/([\s\S]*)\/([a-z]*)$/);
   if (!match) return { pattern: String(pattern || ""), flags: uniqueFlags(fallbackFlags || "gs") };
@@ -777,35 +918,213 @@ function uniqueFlags(flags) {
   return Array.from(new Set(String(flags || "").replace(/[^dgimsuvy]/g, "").split(""))).join("");
 }
 
+function applySillyTavernMacros(content) {
+  const userName = "You";
+  const charName = card?.name || "Character";
+  const input = inputEl()?.value || "";
+  const replacements = [
+    ["{{user}}", userName], ["{{User}}", userName], ["{{USER}}", userName],
+    ["<user>", userName], ["<User>", userName], ["<USER>", userName],
+    ["{{char}}", charName], ["{{Char}}", charName], ["{{CHAR}}", charName],
+    ["<char>", charName], ["<Char>", charName], ["<CHAR>", charName],
+    ["{{input}}", input], ["{{Input}}", input], ["{{INPUT}}", input],
+    ["<input>", input], ["<Input>", input], ["<INPUT>", input],
+  ];
+  let output = String(content || "");
+  for (const [from, to] of replacements) output = output.split(from).join(to);
+  return output;
+}
+
 function extractGuiHtml(content) {
   let text = String(content || "").trim();
-  const fence = text.match(/^```(?:html)?\s*([\s\S]*?)\s*```$/i);
+  const fence = text.match(/^`{3,}(?:html)?\s*([\s\S]*?)\s*`{3,}$/i);
   if (fence) text = fence[1].trim();
 
-  const guiMatch = text.match(/<Gui\b[^>]*>([\s\S]*?)<\/Gui>/i);
+  const guiMatch = text.match(/^<Gui\b[^>]*>([\s\S]*?)<\/Gui>$/i);
   if (guiMatch) return guiMatch[1].trim();
 
   if (/^(?:<!doctype\s+html>|<html\b)/i.test(text)) return text;
   return null;
 }
 
+function splitDisplayParts(content) {
+  const direct = extractGuiHtml(content);
+  if (direct) return [{ type: "html", content: direct }];
+
+  const parts = [];
+  const source = String(content || "");
+  const matcher = /<Gui\b[^>]*>[\s\S]*?<\/Gui>|`{3,}(?:html)?\s*[\s\S]*?`{3,}/gi;
+  let cursor = 0;
+  let match;
+  while ((match = matcher.exec(source))) {
+    if (match.index > cursor) {
+      parts.push({ type: "text", content: source.slice(cursor, match.index) });
+    }
+    const html = extractGuiHtml(match[0]);
+    parts.push(html ? { type: "html", content: html } : { type: "text", content: match[0] });
+    cursor = matcher.lastIndex;
+  }
+  if (cursor < source.length) parts.push({ type: "text", content: source.slice(cursor) });
+  return parts.length ? parts : [{ type: "text", content: source }];
+}
+
+async function loadAvatar() {
+  const avatar = el("avatar");
+  try {
+    avatar.src = await SDK.loadAsset("assets/avatar.png");
+  } catch (error) {
+    console.warn("Avatar data URI failed, falling back to tavern URL", error);
+    avatar.src = SDK.getAssetUrl("assets/avatar.png");
+  }
+}
+
 function buildGuiSrcdoc(html) {
-  const bridge = `<script>
+  const bridgeStyle = `<style id="tt-classic-host-style">
+html, body { overflow: visible !important; min-height: 0 !important; }
+body { scrollbar-width: none; }
+body::-webkit-scrollbar { display: none; }
+</style>`;
+  const bridge = `${bridgeStyle}<script>
 window.triggerSlash = function(command) {
   parent.postMessage({ type: "tt-classic-command", command: String(command || "") }, "*");
 };
+window.event_types = parent.event_types || {};
+window.eventSource = {
+  on: function() {},
+  once: function() {},
+  makeFirst: function() {},
+  removeListener: function() {},
+  emit: function(name) {
+    parent.postMessage({ type: "tt-classic-event", name: name, args: Array.prototype.slice.call(arguments, 1) }, "*");
+  },
+};
+window.getContext = function() {
+  return parent.getContext ? parent.getContext() : {};
+};
+window.SillyTavern = { getContext: window.getContext, eventSource: window.eventSource, event_types: window.event_types };
+window.TavernHelper = {
+  setInput: function(text) { parent.postMessage({ type: "tt-classic-input", mode: "set", text: String(text || "") }, "*"); },
+  appendInput: function(text) { parent.postMessage({ type: "tt-classic-input", mode: "append", text: String(text || "") }, "*"); },
+  send: function(text) { parent.postMessage({ type: "tt-classic-input", mode: "set", text: String(text || ""), send: true }, "*"); },
+};
+window.toastr = {
+  info: console.info.bind(console),
+  success: console.info.bind(console),
+  warning: console.warn.bind(console),
+  error: console.error.bind(console),
+};
+(function() {
+  function reportSize() {
+    var body = document.body;
+    var doc = document.documentElement;
+    var height = Math.max(body ? body.scrollHeight : 0, doc ? doc.scrollHeight : 0, body ? body.offsetHeight : 0, doc ? doc.offsetHeight : 0);
+    parent.postMessage({ type: "tt-classic-resize", height: height }, "*");
+  }
+  window.addEventListener("load", reportSize);
+  document.addEventListener("DOMContentLoaded", reportSize);
+  if (window.ResizeObserver) {
+    new ResizeObserver(reportSize).observe(document.documentElement);
+  }
+  setTimeout(reportSize, 50);
+  setTimeout(reportSize, 350);
+  setInterval(reportSize, 1000);
+})();
 <\/script>`;
   if (/<head\b[^>]*>/i.test(html)) {
     return html.replace(/<head\b[^>]*>/i, (match) => `${match}${bridge}`);
   }
   return `${bridge}${html}`;
 }
+
+function setInputText(text) {
+  const input = inputEl();
+  input.value = String(text || "");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
+}
+
+function appendInputText(text) {
+  const input = inputEl();
+  const value = String(text || "").trim();
+  if (!value) return;
+  const current = input.value.trim();
+  input.value = current ? `${current}\n${value}` : value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.focus();
+}
+
+function resizeGuiFrame(source, rawHeight) {
+  const contentHeight = Number(rawHeight) || 0;
+  const viewportMin = Math.max(320, window.innerHeight - 154);
+  const height = Math.max(viewportMin, Math.min(12000, contentHeight + 8));
+  for (const frame of document.querySelectorAll(".gui-frame")) {
+    if (frame.contentWindow === source) {
+      frame.style.height = `${height}px`;
+      scrollChatToBottom(false);
+      return;
+    }
+  }
+}
+
+function scrollChatToBottom(force = true) {
+  const scroller = el("chat") || el("messages");
+  if (!scroller) return;
+  if (force || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160) {
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+function getContext() {
+  return {
+    name1: "You",
+    name2: card?.name || "Character",
+    characterId: card?.name || "",
+    chatId: currentChat?.id || "",
+    chat: currentChat,
+    eventSource,
+    event_types,
+    extensionSettings: {},
+    sendSystemMessage: (_type, text) => addMessage("system", text),
+    generate: () => send(),
+    triggerSlash: handleGuiCommand,
+  };
+}
+
+function createEventSource() {
+  const listeners = new Map();
+  const on = (name, callback) => {
+    if (!listeners.has(name)) listeners.set(name, new Set());
+    listeners.get(name).add(callback);
+    return callback;
+  };
+  const removeListener = (name, callback) => listeners.get(name)?.delete(callback);
+  const emit = (name, ...args) => {
+    for (const callback of listeners.get(name) || []) {
+      try { callback(...args); } catch (error) { console.error(error); }
+    }
+  };
+  return {
+    on,
+    makeFirst: on,
+    removeListener,
+    emit,
+    once(name, callback) {
+      const wrapped = (...args) => {
+        removeListener(name, wrapped);
+        callback(...args);
+      };
+      return on(name, wrapped);
+    },
+  };
+}
 "#;
 
 const CLASSIC_STYLE: &str = r#"* { box-sizing: border-box; }
 body {
   margin: 0;
-  min-height: 100vh;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
   background: #111016;
   color: #e8e1ef;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -813,7 +1132,7 @@ body {
 button, textarea { font: inherit; }
 .shell {
   display: grid;
-  grid-template-columns: 280px minmax(320px, 1fr) 300px;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(240px, 300px);
   height: 100vh;
   overflow: hidden;
 }
@@ -825,17 +1144,28 @@ button, textarea { font: inherit; }
 .left { border-right: 1px solid #2d2938; padding: 18px; }
 .right { border-left: 1px solid #2d2938; padding: 18px; }
 .avatar {
-  width: 100%;
-  aspect-ratio: 2 / 3;
+  width: 168px;
+  max-width: 100%;
+  aspect-ratio: 1;
   object-fit: cover;
-  border-radius: 8px;
+  object-position: center;
+  border-radius: 50%;
   border: 1px solid #3b3549;
+  display: block;
+  margin: 0 auto;
 }
 h1 { margin: 14px 0 6px; font-size: 1.3rem; }
 h2 { margin: 0 0 16px; }
 h3 { margin: 18px 0 6px; color: #c9b6ff; font-size: .86rem; }
 p, pre { color: #bdb3c8; line-height: 1.55; white-space: pre-wrap; }
-.chat { display: flex; flex-direction: column; min-width: 0; background: #111016; }
+.chat {
+  display: grid;
+  grid-template-rows: 58px minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100vh;
+  background: #111016;
+}
 .topbar {
   height: 58px;
   display: flex;
@@ -858,12 +1188,22 @@ button:hover, .chat-list button.active { border-color: #9d7cff; background: #302
 .chat-list { display: flex; flex-direction: column; gap: 8px; margin-top: 18px; }
 .chat-list button { text-align: left; color: #bdb3c8; }
 .messages {
-  flex: 1;
-  overflow: auto;
-  padding: 24px;
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: clamp(12px, 2.4vw, 24px);
+  padding-bottom: clamp(18px, 3vw, 32px);
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.messages-inner {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-height: min-content;
 }
 .message {
   max-width: min(760px, 86%);
@@ -871,6 +1211,17 @@ button:hover, .chat-list button.active { border-color: #9d7cff; background: #302
   border-radius: 10px;
   white-space: pre-wrap;
   line-height: 1.55;
+  overflow: visible;
+}
+.mes_text {
+  min-width: 0;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mes_plain {
+  white-space: pre-wrap;
 }
 .message.user {
   align-self: flex-end;
@@ -883,19 +1234,23 @@ button:hover, .chat-list button.active { border-color: #9d7cff; background: #302
   border: 1px solid #302b3c;
 }
 .message.gui-message {
-  width: min(760px, 96%);
-  max-width: min(760px, 96%);
+  width: min(1040px, 100%);
+  max-width: min(1040px, 100%);
   padding: 0;
   background: transparent;
   border: 0;
+  white-space: normal;
 }
 .gui-frame {
   display: block;
   width: 100%;
-  min-height: 680px;
+  min-height: 260px;
+  height: 360px;
+  max-height: none;
   border: 0;
   border-radius: 12px;
   background: transparent;
+  overflow: hidden;
 }
 .greeting {
   max-width: min(680px, 86%);
@@ -905,11 +1260,15 @@ button:hover, .chat-list button.active { border-color: #9d7cff; background: #302
   border-style: dashed;
 }
 .composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 20;
   display: flex;
   gap: 10px;
   padding: 14px;
   border-top: 1px solid #2d2938;
   background: #17151d;
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.28);
 }
 textarea {
   flex: 1;
@@ -925,9 +1284,15 @@ textarea {
 }
 textarea:focus { border-color: #9d7cff; }
 .hidden { display: none; }
-@media (max-width: 900px) {
+@media (max-width: 1180px) {
+  .shell { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
+  .right { display: none; }
+}
+@media (max-width: 760px) {
   .shell { grid-template-columns: 1fr; }
-  .left, .right { display: none; }
-  .gui-frame { min-height: 560px; }
+  .left { display: none; }
+  .messages { padding: 10px; }
+  .message { max-width: 100%; }
+  .gui-frame { min-height: 360px; }
 }
 "#;
