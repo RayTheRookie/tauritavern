@@ -241,6 +241,7 @@ function ensureFileExists(file) {
       state.pipeline.regex_mutators[index] = {
         id: `display_regex_${index + 1}`,
         enabled: true,
+        placement: "display",
         target: "display",
         depth_range: [],
         pattern: "",
@@ -248,6 +249,9 @@ function ensureFileExists(file) {
         flags: "gs",
         sample: "",
         description: "",
+        markdown_only: true,
+        prompt_only: false,
+        run_on_edit: true,
       };
     }
     return;

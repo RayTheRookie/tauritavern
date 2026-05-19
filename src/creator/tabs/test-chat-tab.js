@@ -48,7 +48,10 @@ async function handleSend() {
       workbenchId: state.workbenchId,
       message: message,
     });
-    assistantEl.textContent = response;
+    assistantEl.textContent = typeof response === "string" ? response : response.reply;
+    if (response && response.dry_run) {
+      msgArea.appendChild(createDryRunEl(response.dry_run));
+    }
   } catch (e) {
     assistantEl.textContent = "Error: " + e;
     assistantEl.style.color = "var(--danger)";
@@ -66,4 +69,24 @@ function createMsgEl(role, text) {
   div.className = "cr-chat-msg " + role;
   div.textContent = text;
   return div;
+}
+
+function createDryRunEl(dryRun) {
+  const div = document.createElement("details");
+  div.className = "cr-chat-msg system";
+  div.open = false;
+  const triggers = dryRun.world_triggers || [];
+  const rows = triggers.length
+    ? triggers.map(t => {
+      const status = t.included ? "included" : "skipped";
+      const label = t.id || (t.keys || []).join(", ") || "world entry";
+      return `<div>${esc(status)} | ${esc(t.trigger)} | depth ${t.recursion_depth ?? 0} | ${esc(label)}</div>`;
+    }).join("")
+    : "<div>No world info triggered.</div>";
+  div.innerHTML = `<summary>Prompt dry run: ${triggers.filter(t => t.included).length}/${triggers.length} world entries included</summary><div style="margin-top:8px;font-size:0.75rem;line-height:1.5;">${rows}</div>`;
+  return div;
+}
+
+function esc(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }

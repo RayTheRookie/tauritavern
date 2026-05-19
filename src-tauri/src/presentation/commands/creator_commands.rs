@@ -1,5 +1,5 @@
 use crate::application::dto::{
-    default_prompt_entries, Manifest, PipelineConfig, PresetConfig, WorldEntry,
+    default_prompt_entries, Manifest, PipelineConfig, PresetConfig, PromptDryRunResult, WorldEntry,
 };
 use crate::application::services::chat_completion_service;
 use crate::infrastructure::credentials::CredentialService;
@@ -535,12 +535,18 @@ pub async fn creator_agent_chat(
 
 // ── Test Chat ────────────────────────────────────────────
 
+#[derive(Debug, serde::Serialize)]
+pub struct TestChatWorkbenchResponse {
+    pub reply: String,
+    pub dry_run: PromptDryRunResult,
+}
+
 #[tauri::command]
 pub async fn test_chat_workbench(
     state: tauri::State<'_, AppState>,
     workbench_id: String,
     message: String,
-) -> Result<String, String> {
+) -> Result<TestChatWorkbenchResponse, String> {
     let wb_dir = state.data_dir.join("workbench").join(&workbench_id);
     let temp_cart_id = format!("__wb_{}__", workbench_id);
 
@@ -673,7 +679,10 @@ pub async fn test_chat_workbench(
         })
         .await;
 
-    Ok(full_response)
+    Ok(TestChatWorkbenchResponse {
+        reply: full_response,
+        dry_run: rendered.dry_run,
+    })
 }
 
 // ── Export ───────────────────────────────────────────────

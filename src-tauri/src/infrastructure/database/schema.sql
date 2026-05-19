@@ -28,6 +28,19 @@ CREATE TABLE IF NOT EXISTS messages (
     FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS message_swipes (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL,
+    swipe_index INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(message_id, swipe_index),
+    FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_swipes_message
+    ON message_swipes(message_id, swipe_index);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -52,6 +65,15 @@ CREATE INDEX IF NOT EXISTS idx_rag_memories_cartridge_source
 
 CREATE INDEX IF NOT EXISTS idx_rag_memories_chat
     ON rag_memories(chat_id);
+
+CREATE TABLE IF NOT EXISTS chat_variables (
+    chat_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (chat_id, name),
+    FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS profiles (
     id TEXT PRIMARY KEY,

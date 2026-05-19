@@ -25,6 +25,9 @@
   }
 
   function getInvoke() {
+    if (typeof window !== "undefined" && window.__TAURI_TAVERN_BRIDGE__?.invoke) {
+      return window.__TAURI_TAVERN_BRIDGE__.invoke;
+    }
     if (typeof window !== "undefined" && window.__TAURI__) {
       return window.__TAURI__.core.invoke;
     }
@@ -37,6 +40,9 @@
   }
 
   function getListen() {
+    if (typeof window !== "undefined" && window.__TAURI_TAVERN_BRIDGE__?.listen) {
+      return window.__TAURI_TAVERN_BRIDGE__.listen;
+    }
     if (typeof window !== "undefined" && window.__TAURI__?.event?.listen) {
       return window.__TAURI__.event.listen;
     }
@@ -124,7 +130,8 @@
      */
     async getMessages(chatId) {
       const invoke = getInvoke();
-      return invoke("get_messages", { chatId });
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("get_messages", { cartridgeId, chatId });
     },
 
     /**
@@ -154,6 +161,24 @@
     },
 
     /**
+     * Execute a SillyTavern-style slash command/STScript snippet.
+     * The command is handled locally and does not call the model unless a future
+     * command explicitly does so.
+     * @param {string} chatId
+     * @param {string} command - e.g. "/setvar mood=happy" or "/getvar mood | /echo {{pipe}}"
+     * @returns {Promise<string>} Command output.
+     */
+    async executeCommand(chatId, command) {
+      const invoke = getInvoke();
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("execute_st_command", {
+        cartridgeId,
+        chatId,
+        command,
+      });
+    },
+
+    /**
      * Run the headless prompt pipeline without sending a network request.
      * @param {string|null} chatId - Existing chat ID, or null for an empty dry run.
      * @param {string} message - Simulated user message.
@@ -176,7 +201,61 @@
      */
     async deleteChat(chatId) {
       const invoke = getInvoke();
-      return invoke("delete_chat", { chatId });
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("delete_chat", { cartridgeId, chatId });
+    },
+
+    /**
+     * Set a chat-scoped variable for ST-style macros and scripts.
+     * @param {string} chatId
+     * @param {string} name
+     * @param {string} value
+     * @returns {Promise<void>}
+     */
+    async setChatVariable(chatId, name, value) {
+      const invoke = getInvoke();
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("set_chat_variable", {
+        cartridgeId,
+        chatId,
+        name,
+        value: String(value ?? ""),
+      });
+    },
+
+    /**
+     * Read a chat-scoped variable.
+     * @param {string} chatId
+     * @param {string} name
+     * @returns {Promise<string|null>}
+     */
+    async getChatVariable(chatId, name) {
+      const invoke = getInvoke();
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("get_chat_variable", { cartridgeId, chatId, name });
+    },
+
+    /**
+     * List all chat-scoped variables.
+     * @param {string} chatId
+     * @returns {Promise<Array<{chat_id:string,name:string,value:string,updated_at:string}>>}
+     */
+    async listChatVariables(chatId) {
+      const invoke = getInvoke();
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("list_chat_variables", { cartridgeId, chatId });
+    },
+
+    /**
+     * Delete a chat-scoped variable.
+     * @param {string} chatId
+     * @param {string} name
+     * @returns {Promise<void>}
+     */
+    async deleteChatVariable(chatId, name) {
+      const invoke = getInvoke();
+      const cartridgeId = getCartridgeIdFromUrl();
+      return invoke("delete_chat_variable", { cartridgeId, chatId, name });
     },
 
     /**

@@ -38,7 +38,7 @@ function renderEntryList() {
       <div class="cr-entry-card-keys">Keys: ${(entry.keys || []).join(", ") || "(none)"}</div>
       <div class="cr-entry-card-content">${esc((entry.content || "").slice(0, 100))}</div>
       <div style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">
-        Position: ${displayPosition(entry)} | Depth: ${entry.insertion_depth ?? "auto"} | Role: ${entry.role || "system"} | Order: ${entry.order ?? i} | ${entry.enable_semantic_search ? "RAG" : "Keyword"} | ${isEntryDisabled(entry) ? "DISABLED" : "Active"}
+        Position: ${displayPosition(entry)} | Depth: ${entry.insertion_depth ?? "auto"} | Role: ${entry.role || "system"} | Order: ${entry.order ?? i} | ${entry.constant ? "Constant" : "Keyword"}${entry.selective ? " + Filter" : ""}${entry.enable_semantic_search ? " + RAG" : ""} | ${isEntryDisabled(entry) ? "DISABLED" : "Active"}
       </div>
     </div>
   `).join("");
@@ -53,7 +53,7 @@ function renderEntryList() {
 
 function openEntryEditor(index) {
   editingIndex = index;
-  const entry = index >= 0 ? state.worldInfo[index] : { id: "", enabled: true, keys: [], content: "", secondary_keys: [], enable_semantic_search: false, insertion_depth: null, position: "auto", order: state.worldInfo.length * 100, role: "system" };
+  const entry = normalizeEntry(index >= 0 ? state.worldInfo[index] : null, index);
   const container = document.getElementById("wi-modal-container");
   container.innerHTML = `
     <div class="cr-modal-overlay" id="wi-modal-overlay">
@@ -72,6 +72,20 @@ function openEntryEditor(index) {
           </div>
           <div class="cr-form-group">
             <label><span>Secondary Keys</span><input type="text" id="wi-edit-sec-keys" value="${esc((entry.secondary_keys || []).join(", "))}" placeholder="(optional)" /></label>
+          </div>
+          <div class="cr-form-row">
+            <div class="cr-form-group">
+              <label><span>Selective Logic</span>
+              <select id="wi-edit-selective-logic">
+                <option value="and_any" ${entry.selective_logic === "and_any" ? "selected" : ""}>AND ANY</option>
+                <option value="and_all" ${entry.selective_logic === "and_all" ? "selected" : ""}>AND ALL</option>
+                <option value="not_any" ${entry.selective_logic === "not_any" ? "selected" : ""}>NOT ANY</option>
+                <option value="not_all" ${entry.selective_logic === "not_all" ? "selected" : ""}>NOT ALL</option>
+              </select></label>
+            </div>
+            <div class="cr-form-group">
+              <label><span>Trigger Probability</span><input type="number" id="wi-edit-probability" value="${entry.probability ?? 100}" min="0" max="100" step="1" /></label>
+            </div>
           </div>
           <div class="cr-form-group">
             <label><span>Content *</span><textarea id="wi-edit-content" rows="5">${esc(entry.content || "")}</textarea></label>
@@ -102,6 +116,46 @@ function openEntryEditor(index) {
                 <option value="assistant" ${entry.role === "assistant" ? "selected" : ""}>assistant</option>
               </select></label>
             </div>
+          </div>
+          <div class="cr-form-row">
+            <div class="cr-form-group">
+              <label><span>Scan Depth Override</span><input type="number" id="wi-edit-scan-depth" value="${entry.scan_depth ?? ""}" placeholder="empty = global" min="1" /></label>
+            </div>
+            <div class="cr-form-group">
+              <label><span>Case / Word Match</span>
+              <select id="wi-edit-match-mode">
+                <option value="global" ${entry.case_sensitive == null && entry.match_whole_words == null ? "selected" : ""}>Use global defaults</option>
+                <option value="case" ${entry.case_sensitive === true && entry.match_whole_words !== true ? "selected" : ""}>Case sensitive</option>
+                <option value="whole" ${entry.case_sensitive !== true && entry.match_whole_words === true ? "selected" : ""}>Whole words</option>
+                <option value="case_whole" ${entry.case_sensitive === true && entry.match_whole_words === true ? "selected" : ""}>Case + whole words</option>
+              </select></label>
+            </div>
+          </div>
+          <div class="cr-form-row" style="align-items:flex-start;">
+            <label style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" id="wi-edit-constant" ${entry.constant ? "checked" : ""} />
+              <span>Constant</span>
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" id="wi-edit-selective" ${entry.selective ? "checked" : ""} />
+              <span>Selective</span>
+            </label>
+          </div>
+          <div class="cr-form-row" style="align-items:flex-start;">
+            <label style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" id="wi-edit-recursive" ${entry.recursive !== false ? "checked" : ""} />
+              <span>Can be triggered recursively</span>
+            </label>
+            <label style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" id="wi-edit-prevent-recursion" ${entry.prevent_recursion ? "checked" : ""} />
+              <span>Prevent recursion from this entry</span>
+            </label>
+          </div>
+          <div class="cr-form-group">
+            <label style="flex-direction:row;align-items:center;gap:8px;">
+              <input type="checkbox" id="wi-edit-delay-recursion" ${entry.delay_until_recursion ? "checked" : ""} />
+              <span>Delay until recursion</span>
+            </label>
           </div>
           <div class="cr-form-group">
             <label style="flex-direction:row;align-items:center;gap:8px;">
@@ -137,12 +191,23 @@ function closeModal() {
 }
 
 function saveEntry() {
+  const matchMode = document.getElementById("wi-edit-match-mode").value;
   const entry = {
     id: document.getElementById("wi-edit-id").value.trim(),
     enabled: editingIndex >= 0 ? !isEntryDisabled(state.worldInfo[editingIndex]) : true,
     keys: parseKeys(document.getElementById("wi-edit-keys").value),
     secondary_keys: parseKeys(document.getElementById("wi-edit-sec-keys").value),
     content: document.getElementById("wi-edit-content").value,
+    constant: document.getElementById("wi-edit-constant").checked,
+    selective: document.getElementById("wi-edit-selective").checked,
+    selective_logic: document.getElementById("wi-edit-selective-logic").value,
+    case_sensitive: matchMode.includes("case") ? true : null,
+    match_whole_words: matchMode.includes("whole") ? true : null,
+    scan_depth: parseOptionalInt(document.getElementById("wi-edit-scan-depth").value),
+    probability: clampNumber(parseFloat(document.getElementById("wi-edit-probability").value || "100"), 0, 100),
+    recursive: document.getElementById("wi-edit-recursive").checked,
+    prevent_recursion: document.getElementById("wi-edit-prevent-recursion").checked,
+    delay_until_recursion: document.getElementById("wi-edit-delay-recursion").checked,
     insertion_depth: parseOptionalInt(document.getElementById("wi-edit-depth").value),
     position: document.getElementById("wi-edit-position").value,
     order: parseInt(document.getElementById("wi-edit-order").value || "0"),
@@ -186,6 +251,37 @@ function parseKeys(input) {
 
 function parseOptionalInt(s) {
   return s.trim() ? parseInt(s) : null;
+}
+
+function clampNumber(value, min, max) {
+  if (!Number.isFinite(value)) return max;
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeEntry(entry, index) {
+  return {
+    id: "",
+    enabled: true,
+    keys: [],
+    content: "",
+    secondary_keys: [],
+    enable_semantic_search: false,
+    constant: false,
+    selective: false,
+    selective_logic: "and_any",
+    case_sensitive: null,
+    match_whole_words: null,
+    scan_depth: null,
+    probability: 100,
+    recursive: true,
+    prevent_recursion: false,
+    delay_until_recursion: false,
+    insertion_depth: null,
+    position: "auto",
+    order: Math.max(index, 0) * 100 || state.worldInfo.length * 100,
+    role: "system",
+    ...(entry || {}),
+  };
 }
 
 function isEntryDisabled(entry) {

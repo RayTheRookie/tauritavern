@@ -33,6 +33,15 @@ pub struct MessageRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct MessageSwipeRow {
+    pub id: String,
+    pub message_id: String,
+    pub swipe_index: i64,
+    pub content: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct RagMemoryRow {
     pub id: String,
     pub cartridge_id: String,
@@ -43,6 +52,14 @@ pub struct RagMemoryRow {
     pub content: String,
     pub vector_json: String,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ChatVariableRow {
+    pub chat_id: String,
+    pub name: String,
+    pub value: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -110,6 +127,22 @@ impl SqliteRepo {
             .execute(&self.pool)
             .await?;
         sqlx::query(
+            "DELETE FROM chat_variables WHERE chat_id IN (SELECT id FROM chats WHERE cartridge_id = ?)",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "DELETE FROM message_swipes WHERE message_id IN (
+                SELECT messages.id FROM messages
+                INNER JOIN chats ON chats.id = messages.chat_id
+                WHERE chats.cartridge_id = ?
+            )",
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
             "DELETE FROM messages WHERE chat_id IN (SELECT id FROM chats WHERE cartridge_id = ?)",
         )
         .bind(id)
@@ -151,8 +184,25 @@ impl SqliteRepo {
         .await
     }
 
+    pub async fn get_chat(&self, id: &str) -> Result<Option<ChatRow>, sqlx::Error> {
+        sqlx::query_as::<_, ChatRow>(
+            "SELECT id, cartridge_id, title, created_at, updated_at FROM chats WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     pub async fn delete_chat(&self, id: &str) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM rag_memories WHERE chat_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM chat_variables WHERE chat_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM message_swipes WHERE message_id IN (SELECT id FROM messages WHERE chat_id = ?)")
             .bind(id)
             .execute(&self.pool)
             .await?;
@@ -192,6 +242,15 @@ impl SqliteRepo {
         Ok(())
     }
 
+    pub async fn update_message_content(&self, id: &str, content: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE messages SET content = ? WHERE id = ?")
+            .bind(content)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_messages_by_chat(
         &self,
         chat_id: &str,
@@ -220,6 +279,74 @@ impl SqliteRepo {
         .await?;
         rows.reverse();
         Ok(rows)
+    }
+
+    pub async fn get_last_message_by_role(
+        &self,
+        chat_id: &str,
+        role: &str,
+    ) -> Result<Option<MessageRow>, sqlx::Error> {
+        sqlx::query_as::<_, MessageRow>(
+            "SELECT id, chat_id, role, content, created_at FROM messages
+             WHERE chat_id = ? AND role = ? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(chat_id)
+        .bind(role)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    pub async fn delete_message(&self, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM rag_memories WHERE message_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM message_swipes WHERE message_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM messages WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn insert_message_swipe(&self, swipe: &MessageSwipeRow) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO message_swipes (id, message_id, swipe_index, content, created_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(&swipe.id)
+        .bind(&swipe.message_id)
+        .bind(swipe.swipe_index)
+        .bind(&swipe.content)
+        .bind(&swipe.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_message_swipes(
+        &self,
+        message_id: &str,
+    ) -> Result<Vec<MessageSwipeRow>, sqlx::Error> {
+        sqlx::query_as::<_, MessageSwipeRow>(
+            "SELECT id, message_id, swipe_index, content, created_at
+             FROM message_swipes WHERE message_id = ? ORDER BY swipe_index ASC",
+        )
+        .bind(message_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn next_swipe_index(&self, message_id: &str) -> Result<i64, sqlx::Error> {
+        let row: (Option<i64>,) =
+            sqlx::query_as("SELECT MAX(swipe_index) FROM message_swipes WHERE message_id = ?")
+                .bind(message_id)
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(row.0.map(|idx| idx + 1).unwrap_or(0))
     }
 
     // ── RAG Memories ────────────────────────────────────────────
@@ -277,6 +404,63 @@ impl SqliteRepo {
         sqlx::query("DELETE FROM rag_memories WHERE cartridge_id = ? AND source_type = ?")
             .bind(cartridge_id)
             .bind(source_type)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    // ── Chat Variables ─────────────────────────────────────────
+
+    pub async fn set_chat_variable(
+        &self,
+        chat_id: &str,
+        name: &str,
+        value: &str,
+        updated_at: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO chat_variables (chat_id, name, value, updated_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(chat_id)
+        .bind(name)
+        .bind(value)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_chat_variable(
+        &self,
+        chat_id: &str,
+        name: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM chat_variables WHERE chat_id = ? AND name = ?")
+                .bind(chat_id)
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(|r| r.0))
+    }
+
+    pub async fn list_chat_variables(
+        &self,
+        chat_id: &str,
+    ) -> Result<Vec<ChatVariableRow>, sqlx::Error> {
+        sqlx::query_as::<_, ChatVariableRow>(
+            "SELECT chat_id, name, value, updated_at FROM chat_variables WHERE chat_id = ? ORDER BY name ASC",
+        )
+        .bind(chat_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    pub async fn delete_chat_variable(&self, chat_id: &str, name: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM chat_variables WHERE chat_id = ? AND name = ?")
+            .bind(chat_id)
+            .bind(name)
             .execute(&self.pool)
             .await?;
         Ok(())

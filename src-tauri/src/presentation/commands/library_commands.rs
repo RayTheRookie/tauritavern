@@ -104,6 +104,7 @@ pub async fn open_cartridge(
         &label,
         tauri::WebviewUrl::External(url.parse().map_err(|e| format!("Invalid URL: {}", e))?),
     )
+    .initialization_script(cartridge_runtime_bootstrap())
     .title(&cartridge.name)
     .inner_size(900.0, 700.0)
     .resizable(true)
@@ -111,6 +112,78 @@ pub async fn open_cartridge(
     .map_err(|e| format!("Failed to create window: {}", e))?;
 
     Ok(())
+}
+
+fn cartridge_runtime_bootstrap() -> &'static str {
+    r#"
+(() => {
+  const rawInvoke = window.__TAURI__?.core?.invoke || window.__TAURI_INTERNALS__?.invoke;
+  const rawListen = window.__TAURI__?.event?.listen || window.__TAURI_INTERNALS__?.event?.listen;
+  const href = String(window.location.href || "");
+  const match = href.match(/\/cartridge\/([^/]+)/);
+  const cartridgeId = match ? decodeURIComponent(match[1]) : null;
+  const allowed = new Set([
+    "send_chat",
+    "execute_st_command",
+    "dry_run_prompt_pipeline",
+    "create_chat",
+    "list_chats",
+    "get_messages",
+    "delete_chat",
+    "set_chat_variable",
+    "get_chat_variable",
+    "list_chat_variables",
+    "delete_chat_variable",
+    "load_asset",
+    "get_preset",
+    "match_world_info"
+  ]);
+  const allowedEvents = new Set(["chat-chunk"]);
+
+  function scopedArgs(command, args) {
+    const scoped = Object.assign({}, args || {});
+    if (cartridgeId && !scoped.cartridgeId && command !== "delete_chat") {
+      scoped.cartridgeId = cartridgeId;
+    }
+    if (cartridgeId && command === "delete_chat" && !scoped.cartridgeId) {
+      scoped.cartridgeId = cartridgeId;
+    }
+    if (scoped.cartridgeId && cartridgeId && scoped.cartridgeId !== cartridgeId) {
+      throw new Error("Cartridge scope mismatch.");
+    }
+    return scoped;
+  }
+
+  const bridge = Object.freeze({
+    invoke(command, args) {
+      if (!rawInvoke) throw new Error("Tauri IPC unavailable.");
+      if (!allowed.has(command)) throw new Error(`Command '${command}' is not exposed to cartridge runtime.`);
+      return rawInvoke(command, scopedArgs(command, args));
+    },
+    listen(event, handler) {
+      if (!rawListen) throw new Error("Tauri event bridge unavailable.");
+      if (!allowedEvents.has(event)) throw new Error(`Event '${event}' is not exposed to cartridge runtime.`);
+      return rawListen(event, handler);
+    },
+    cartridgeId
+  });
+
+  Object.defineProperty(window, "__TAURI_TAVERN_BRIDGE__", {
+    value: bridge,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  });
+  try { delete window.__TAURI__; } catch (_) {}
+  try { delete window.__TAURI_INTERNALS__; } catch (_) {}
+  try {
+    Object.defineProperty(window, "__TAURI__", { value: undefined, configurable: false, writable: false });
+  } catch (_) {}
+  try {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: undefined, configurable: false, writable: false });
+  } catch (_) {}
+})();
+"#
 }
 
 #[tauri::command]

@@ -361,7 +361,7 @@ function updateSidebarContext() {
   const files = Object.keys(state.uiFiles);
   const displayRegex = (state.pipeline.regex_mutators || [])
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => ["display", "frontend", "message_display"].includes(item.target || ""));
+    .filter(({ item }) => regexRunsOnDisplay(item));
   const tabLabels = {
     metadata: "Metadata",
     preset: "Prompt Preset",
@@ -408,6 +408,7 @@ function updateSidebarContext() {
     state.pipeline.regex_mutators.push({
       id: `display_regex_${state.pipeline.regex_mutators.length + 1}`,
       enabled: true,
+      placement: "display",
       target: "display",
       depth_range: [],
       pattern: "<Gui>([\\s\\S]*?)</Gui>",
@@ -415,12 +416,23 @@ function updateSidebarContext() {
       flags: "gs",
       sample: "<Gui><div>Hello</div></Gui>",
       description: "Frontend display replacement",
+      markdown_only: true,
+      prompt_only: false,
+      run_on_edit: true,
     });
     scheduleAutoSave("pipeline");
     const index = state.pipeline.regex_mutators.length - 1;
     updateSidebarContext();
     window.dispatchEvent(new CustomEvent("creator-edit-regex-replacement", { detail: { index } }));
   });
+}
+
+function regexRunsOnDisplay(mutator) {
+  const placement = String(mutator.placement || "").toLowerCase();
+  const target = String(mutator.target || "").toLowerCase();
+  if (mutator.prompt_only || placement === "prompt") return false;
+  if (mutator.markdown_only || placement === "display" || placement === "ui_display") return true;
+  return ["display", "frontend", "message_display", "bot_output"].includes(target);
 }
 
 let previewTimer;

@@ -15,6 +15,9 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> 
     sqlx::query("DELETE FROM messages WHERE chat_id NOT IN (SELECT id FROM chats)")
         .execute(pool)
         .await?;
+    sqlx::query("DELETE FROM message_swipes WHERE message_id NOT IN (SELECT id FROM messages)")
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM rag_memories WHERE cartridge_id NOT IN (SELECT id FROM cartridges)")
         .execute(pool)
         .await?;
@@ -24,6 +27,9 @@ pub async fn run_migrations(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> 
     .execute(pool)
     .await?;
     sqlx::query("DELETE FROM chats WHERE cartridge_id NOT IN (SELECT id FROM cartridges)")
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM chat_variables WHERE chat_id NOT IN (SELECT id FROM chats)")
         .execute(pool)
         .await?;
 

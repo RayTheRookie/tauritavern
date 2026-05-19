@@ -3,7 +3,7 @@ use crate::application::dto::{
     PromptDryRunResult, PromptInsertionDebug, RagRecallDebug, RegexMutationDebug, RegexMutator,
     WorldEntry, WorldTriggerDebug,
 };
-use crate::application::services::memory_service;
+use crate::application::services::{memory_service, st_macro_engine};
 use crate::infrastructure::apis::LlmHttpClient;
 use crate::infrastructure::database::{MessageRow, RagMemoryRow, SqliteRepo};
 use crate::infrastructure::fs;
@@ -40,13 +40,9 @@ struct WorldTrigger {
     entry: WorldEntry,
     trigger: String,
     similarity: Option<f32>,
-}
-
-#[derive(Debug, Clone)]
-struct MacroVars {
-    user_name: String,
-    char_name: String,
-    input: String,
+    recursion_depth: usize,
+    index: usize,
+    included: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -86,18 +82,15 @@ pub async fn render_prompt(
     let history_limit = strategy.history_fetch_limit as i64;
 
     let repo_for_rag = repo.clone();
-    let repo_for_world = repo.clone();
     let repo_for_history = repo.clone();
     let cartridge_for_rag = cartridge_id.to_string();
-    let cartridge_for_world = cartridge_id.to_string();
     let chat_for_rag = chat_id.to_string();
     let chat_for_history = chat_id.to_string();
     let user_for_rag = user_message.to_string();
-    let user_for_world = user_message.to_string();
-    let world_for_task = world_entries.clone();
     let rag_threshold = strategy.rag_similarity_threshold;
     let rag_fetch_count = strategy.rag_fetch_count;
     let world_threshold = strategy.rag_similarity_threshold;
+    let model_name = preset.model.as_deref().unwrap_or("gpt-4");
 
     let rag_task = tokio::spawn(async move {
         retrieve_rag_memories(
@@ -111,17 +104,6 @@ pub async fn render_prompt(
         .await
     });
 
-    let world_task = tokio::spawn(async move {
-        trigger_world_entries(
-            &repo_for_world,
-            &cartridge_for_world,
-            &world_for_task,
-            &user_for_world,
-            world_threshold,
-        )
-        .await
-    });
-
     let history_task = tokio::spawn(async move {
         repo_for_history
             .get_recent_messages_by_chat(&chat_for_history, history_limit)
@@ -129,12 +111,6 @@ pub async fn render_prompt(
             .map_err(|e| e.to_string())
     });
 
-    let rag_memories = rag_task
-        .await
-        .map_err(|e| format!("RAG task failed: {}", e))??;
-    let world_triggers = world_task
-        .await
-        .map_err(|e| format!("World info task failed: {}", e))??;
     let mut history_rows = history_task
         .await
         .map_err(|e| format!("History task failed: {}", e))??;
@@ -149,11 +125,19 @@ pub async fn render_prompt(
         });
     }
 
+    let mut regex_mutations = Vec::new();
     let mut history = build_history(history_rows);
-    let model_name = preset.model.as_deref().unwrap_or("gpt-4");
-    let regex_mutations = apply_regex_mutators(&mut history, &pipeline, model_name)?;
+    apply_prompt_regex_to_history(&mut history, &pipeline, model_name, &mut regex_mutations)?;
 
-    let macro_vars = MacroVars {
+    let variables = repo
+        .list_chat_variables(chat_id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| (row.name, row.value))
+        .collect();
+    let last_message_id = history.iter().rev().find_map(|message| message.id.clone());
+    let macro_context = st_macro_engine::MacroContext {
         user_name: preset
             .user_name
             .clone()
@@ -163,7 +147,25 @@ pub async fn render_prompt(
             .clone()
             .unwrap_or_else(|| cartridge_name.to_string()),
         input: user_message.to_string(),
+        last_message_id,
+        variables,
     };
+
+    let world_scan_text = build_world_scan_buffer(&history, &strategy, &macro_context);
+    let world_triggers = trigger_world_entries(
+        repo,
+        cartridge_id,
+        &world_entries,
+        &world_scan_text,
+        &strategy,
+        max_context_tokens,
+        model_name,
+        world_threshold,
+    )
+    .await?;
+    let rag_memories = rag_task
+        .await
+        .map_err(|e| format!("RAG task failed: {}", e))??;
 
     let mut relative_injections = Vec::new();
     let mut in_chat_injections = Vec::new();
@@ -176,7 +178,16 @@ pub async fn render_prompt(
         let item = PromptInjection {
             label: format!("preset:{}", entry.id),
             role: normalize_role(&entry.role),
-            content: entry.content,
+            content: apply_prompt_regex_to_text(
+                entry.content,
+                &pipeline,
+                "system_prompt",
+                0,
+                &normalize_role(&entry.role),
+                None,
+                model_name,
+                &mut regex_mutations,
+            )?,
             depth: entry.depth.unwrap_or(0),
             order: entry.order,
             seq,
@@ -190,7 +201,7 @@ pub async fn render_prompt(
         }
     }
 
-    for trigger in &world_triggers {
+    for trigger in world_triggers.iter().filter(|trigger| trigger.included) {
         let entry = &trigger.entry;
         let item = PromptInjection {
             label: format!(
@@ -198,7 +209,16 @@ pub async fn render_prompt(
                 entry.id.clone().unwrap_or_else(|| entry.keys.join(","))
             ),
             role: normalize_role(&entry.role),
-            content: entry.content.clone(),
+            content: apply_prompt_regex_to_text(
+                entry.content.clone(),
+                &pipeline,
+                "world_info",
+                entry.insertion_depth.unwrap_or(0),
+                &normalize_role(&entry.role),
+                entry.id.as_deref(),
+                model_name,
+                &mut regex_mutations,
+            )?,
             depth: entry.insertion_depth.unwrap_or(0),
             order: entry.order,
             seq,
@@ -258,7 +278,7 @@ pub async fn render_prompt(
                 role: item.role,
                 content: item.content,
             },
-            &macro_vars,
+            &macro_context,
         )
     }));
 
@@ -266,7 +286,7 @@ pub async fn render_prompt(
         .into_iter()
         .map(|msg| ChatMessage {
             role: normalize_role(&msg.role),
-            content: apply_macros(&msg.content, &macro_vars),
+            content: apply_macros(&msg.content, &macro_context),
         })
         .collect();
     let selected_history_tokens = message_tokens(&selected_history_messages, model_name);
@@ -280,7 +300,7 @@ pub async fn render_prompt(
                 role: item.role,
                 content: item.content,
             },
-            &macro_vars,
+            &macro_context,
         );
         insert_with_depth(
             &mut lower_history,
@@ -322,6 +342,8 @@ pub async fn render_prompt(
             keys: trigger.entry.keys.clone(),
             trigger: trigger.trigger.clone(),
             similarity: trigger.similarity,
+            recursion_depth: trigger.recursion_depth,
+            included: trigger.included,
             insertion_depth: trigger.entry.insertion_depth,
             role: normalize_role(&trigger.entry.role),
             content: trigger.entry.content.clone(),
@@ -492,57 +514,65 @@ async fn trigger_world_entries(
     repo: &SqliteRepo,
     cartridge_id: &str,
     entries: &[WorldEntry],
-    query: &str,
+    scan_text: &str,
+    strategy: &crate::application::dto::ContextStrategy,
+    max_context_tokens: usize,
+    model: &str,
     threshold: f32,
 ) -> Result<Vec<WorldTrigger>, String> {
-    let query_vector = embed_text(query);
+    let query_vector = embed_text(scan_text);
     let indexed_scores = score_indexed_world_entries(repo, cartridge_id, &query_vector, threshold)
         .await
         .unwrap_or_default();
     let mut seen = HashSet::new();
-    let mut result = Vec::new();
+    let mut triggers = Vec::new();
+    let mut current_buffers = vec![scan_text.to_string()];
+    let max_depth = strategy.world_max_recursion_steps;
 
-    for (idx, entry) in entries.iter().enumerate() {
-        if !entry.enabled {
-            continue;
+    for recursion_depth in 0..=max_depth {
+        if current_buffers.is_empty() {
+            break;
         }
+        let buffer = current_buffers.join("\n\n");
+        let mut next_buffers = Vec::new();
 
-        let identity = world_entry_identity(cartridge_id, entry);
-        let keyword_hit = entry
-            .keys
-            .iter()
-            .chain(entry.secondary_keys.iter())
-            .find(|key| key_matches(query, key));
-
-        if let Some(key) = keyword_hit {
-            if seen.insert(identity.clone()) {
-                result.push(WorldTrigger {
-                    entry: entry.clone(),
-                    trigger: format!("keyword:{}", key),
-                    similarity: None,
-                });
+        for (idx, entry) in entries.iter().enumerate() {
+            if !world_entry_can_scan(entry, recursion_depth) {
+                continue;
             }
-            continue;
-        }
+            let identity = world_entry_identity(cartridge_id, entry);
+            if seen.contains(&identity) {
+                continue;
+            }
 
-        if entry.enable_semantic_search {
-            let source_id = world_entry_source_id(entry, idx);
-            let similarity = indexed_scores.get(&source_id).copied().unwrap_or_else(|| {
-                let index_text = format!("{}\n{}", entry.keys.join("\n"), entry.content);
-                let entry_vector = embed_text(&index_text);
-                cosine_similarity(&query_vector, &entry_vector)
-            });
-            if similarity >= threshold && seen.insert(identity) {
-                result.push(WorldTrigger {
-                    entry: entry.clone(),
-                    trigger: "semantic".to_string(),
-                    similarity: Some(similarity),
-                });
+            if let Some(mut trigger) = evaluate_world_entry(
+                entry,
+                idx,
+                &buffer,
+                &query_vector,
+                &indexed_scores,
+                strategy,
+                threshold,
+                recursion_depth,
+            ) {
+                if !world_probability_passes(&identity, scan_text, entry.probability) {
+                    continue;
+                }
+                seen.insert(identity);
+                if recursion_depth > 0 && !trigger.trigger.starts_with("recursive:") {
+                    trigger.trigger = format!("recursive:{}", trigger.trigger);
+                }
+                if !entry.prevent_recursion {
+                    next_buffers.push(entry.content.clone());
+                }
+                triggers.push(trigger);
             }
         }
+
+        current_buffers = next_buffers;
     }
 
-    Ok(result)
+    apply_world_budget(triggers, max_context_tokens, strategy, model)
 }
 
 async fn score_indexed_world_entries(
@@ -575,6 +605,217 @@ async fn score_indexed_world_entries(
     Ok(scores)
 }
 
+fn world_entry_can_scan(entry: &WorldEntry, recursion_depth: usize) -> bool {
+    entry.enabled
+        && !entry.content.trim().is_empty()
+        && (recursion_depth > 0 || !entry.delay_until_recursion)
+        && (recursion_depth == 0 || entry.recursive || entry.constant)
+}
+
+fn evaluate_world_entry(
+    entry: &WorldEntry,
+    index: usize,
+    scan_text: &str,
+    query_vector: &[f32],
+    indexed_scores: &HashMap<String, f32>,
+    strategy: &crate::application::dto::ContextStrategy,
+    threshold: f32,
+    recursion_depth: usize,
+) -> Option<WorldTrigger> {
+    let scoped_scan;
+    let scan_text = if let Some(depth) = entry.scan_depth {
+        scoped_scan = take_recent_lines(scan_text, depth.max(1));
+        scoped_scan.as_str()
+    } else {
+        scan_text
+    };
+
+    if entry.constant {
+        return Some(WorldTrigger {
+            entry: entry.clone(),
+            trigger: "constant".to_string(),
+            similarity: None,
+            recursion_depth,
+            index,
+            included: true,
+        });
+    }
+
+    let options = world_match_options(entry, strategy);
+    let primary_hit = entry
+        .keys
+        .iter()
+        .find(|key| key_matches_with_options(scan_text, key, options));
+
+    let mut trigger = primary_hit.map(|key| format!("keyword:{}", key));
+    let mut similarity = None;
+
+    if trigger.is_none() && entry.enable_semantic_search {
+        let source_id = world_entry_source_id(entry, index);
+        let score = indexed_scores.get(&source_id).copied().unwrap_or_else(|| {
+            let index_text = format!("{}\n{}", entry.keys.join("\n"), entry.content);
+            let entry_vector = embed_text(&index_text);
+            cosine_similarity(query_vector, &entry_vector)
+        });
+        if score >= threshold {
+            trigger = Some("semantic".to_string());
+            similarity = Some(score);
+        }
+    }
+
+    let mut trigger = trigger?;
+    if !secondary_keys_pass(entry, scan_text, options) {
+        return None;
+    }
+    if entry.selective && !entry.secondary_keys.is_empty() {
+        trigger.push_str(":secondary");
+    }
+
+    Some(WorldTrigger {
+        entry: entry.clone(),
+        trigger,
+        similarity,
+        recursion_depth,
+        index,
+        included: true,
+    })
+}
+
+fn take_recent_lines(text: &str, depth: usize) -> String {
+    let mut lines = text.lines().rev().take(depth).collect::<Vec<_>>();
+    lines.reverse();
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WorldMatchOptions {
+    case_sensitive: bool,
+    match_whole_words: bool,
+}
+
+fn world_match_options(
+    entry: &WorldEntry,
+    strategy: &crate::application::dto::ContextStrategy,
+) -> WorldMatchOptions {
+    WorldMatchOptions {
+        case_sensitive: entry
+            .case_sensitive
+            .unwrap_or(strategy.world_case_sensitive),
+        match_whole_words: entry
+            .match_whole_words
+            .unwrap_or(strategy.world_match_whole_words),
+    }
+}
+
+fn secondary_keys_pass(entry: &WorldEntry, scan_text: &str, options: WorldMatchOptions) -> bool {
+    if !entry.selective || entry.secondary_keys.is_empty() {
+        return true;
+    }
+
+    let matches: Vec<bool> = entry
+        .secondary_keys
+        .iter()
+        .map(|key| key_matches_with_options(scan_text, key, options))
+        .collect();
+    match normalize_selective_logic(&entry.selective_logic) {
+        "and_all" => matches.iter().all(|hit| *hit),
+        "not_any" => matches.iter().all(|hit| !*hit),
+        "not_all" => !matches.iter().all(|hit| *hit),
+        _ => matches.iter().any(|hit| *hit),
+    }
+}
+
+fn normalize_selective_logic(logic: &str) -> &'static str {
+    match logic.to_ascii_lowercase().as_str() {
+        "and_all" | "all" | "1" => "and_all",
+        "not_any" | "none" | "2" => "not_any",
+        "not_all" | "3" => "not_all",
+        _ => "and_any",
+    }
+}
+
+fn world_probability_passes(identity: &str, scan_text: &str, probability: f32) -> bool {
+    if probability <= 0.0 {
+        return false;
+    }
+    if probability >= 100.0 {
+        return true;
+    }
+
+    let mut hash = 14695981039346656037u64;
+    for byte in identity.bytes().chain(scan_text.bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    let roll = (hash % 10_000) as f32 / 100.0;
+    roll < probability
+}
+
+fn apply_world_budget(
+    mut triggers: Vec<WorldTrigger>,
+    max_context_tokens: usize,
+    strategy: &crate::application::dto::ContextStrategy,
+    model: &str,
+) -> Result<Vec<WorldTrigger>, String> {
+    let budget = strategy
+        .world_budget_tokens
+        .unwrap_or_else(|| max_context_tokens.saturating_mul(strategy.world_budget_percent) / 100);
+    triggers.sort_by(|a, b| {
+        world_budget_rank(a)
+            .cmp(&world_budget_rank(b))
+            .then_with(|| a.entry.order.cmp(&b.entry.order))
+            .then_with(|| a.recursion_depth.cmp(&b.recursion_depth))
+            .then_with(|| a.index.cmp(&b.index))
+    });
+
+    let mut used = 0usize;
+    for trigger in triggers.iter_mut() {
+        let tokens = memory_service::count_tokens(&trigger.entry.content, model);
+        if used.saturating_add(tokens) <= budget {
+            used = used.saturating_add(tokens);
+        } else {
+            trigger.included = false;
+            trigger.trigger = format!("budget_skipped:{}", trigger.trigger);
+        }
+    }
+
+    Ok(triggers)
+}
+
+fn world_budget_rank(trigger: &WorldTrigger) -> usize {
+    if trigger.entry.constant {
+        0
+    } else {
+        1
+    }
+}
+
+fn build_world_scan_buffer(
+    history: &[HistoryMessage],
+    strategy: &crate::application::dto::ContextStrategy,
+    context: &st_macro_engine::MacroContext,
+) -> String {
+    let scan_depth = strategy.world_scan_depth.max(1);
+    let mut lines = Vec::new();
+
+    for message in history.iter().rev().take(scan_depth).rev() {
+        let content = apply_macros(&message.content, context);
+        if strategy.world_include_names {
+            let name = match message.role.as_str() {
+                "user" => context.user_name.as_str(),
+                "assistant" => context.char_name.as_str(),
+                "system" => "System",
+                _ => message.role.as_str(),
+            };
+            lines.push(format!("{}: {}", name, content));
+        } else {
+            lines.push(content);
+        }
+    }
+
+    lines.join("\n")
+}
+
 fn build_history(rows: Vec<MessageRow>) -> Vec<HistoryMessage> {
     let len = rows.len();
     rows.into_iter()
@@ -588,59 +829,152 @@ fn build_history(rows: Vec<MessageRow>) -> Vec<HistoryMessage> {
         .collect()
 }
 
-fn apply_regex_mutators(
+fn apply_prompt_regex_to_history(
     history: &mut [HistoryMessage],
     pipeline: &PipelineConfig,
     model: &str,
-) -> Result<Vec<RegexMutationDebug>, String> {
-    let mut debug = Vec::new();
-
+    debug: &mut Vec<RegexMutationDebug>,
+) -> Result<(), String> {
     for message in history.iter_mut() {
-        for mutator in &pipeline.regex_mutators {
-            if !mutator_applies(mutator, message.depth) {
-                continue;
-            }
-
-            let regex = Regex::new(&mutator.pattern)
-                .map_err(|e| format!("Invalid regex mutator '{}': {}", mutator.id, e))?;
-            let before = message.content.clone();
-            let after = regex
-                .replace_all(&message.content, mutator.replacement.as_str())
-                .to_string();
-
-            if before != after {
-                let before_tokens = memory_service::count_tokens(&before, model);
-                let after_tokens = memory_service::count_tokens(&after, model);
-                message.content = after.clone();
-                debug.push(RegexMutationDebug {
-                    mutator_id: mutator.id.clone(),
-                    message_id: message.id.clone(),
-                    depth: message.depth,
-                    role: message.role.clone(),
-                    before_tokens,
-                    after_tokens,
-                    before,
-                    after,
-                });
-            }
-        }
+        let target = role_regex_target(&message.role);
+        message.content = apply_prompt_regex_to_text(
+            std::mem::take(&mut message.content),
+            pipeline,
+            target,
+            message.depth,
+            &message.role,
+            message.id.as_deref(),
+            model,
+            debug,
+        )?;
     }
 
-    Ok(debug)
+    Ok(())
 }
 
-fn mutator_applies(mutator: &RegexMutator, depth: usize) -> bool {
+fn apply_prompt_regex_to_text(
+    content: String,
+    pipeline: &PipelineConfig,
+    target: &str,
+    depth: usize,
+    role: &str,
+    message_id: Option<&str>,
+    model: &str,
+    debug: &mut Vec<RegexMutationDebug>,
+) -> Result<String, String> {
+    let mut output = content;
+    for mutator in &pipeline.regex_mutators {
+        if !mutator_applies(mutator, "prompt", target, role, depth) {
+            continue;
+        }
+
+        let regex = Regex::new(&mutator.pattern)
+            .map_err(|e| format!("Invalid regex mutator '{}': {}", mutator.id, e))?;
+        let before = output.clone();
+        let after = regex
+            .replace_all(&output, mutator.replacement.as_str())
+            .to_string();
+
+        if before != after {
+            let before_tokens = memory_service::count_tokens(&before, model);
+            let after_tokens = memory_service::count_tokens(&after, model);
+            output = after.clone();
+            debug.push(RegexMutationDebug {
+                mutator_id: mutator.id.clone(),
+                message_id: message_id.map(str::to_string),
+                depth,
+                role: role.to_string(),
+                before_tokens,
+                after_tokens,
+                before,
+                after,
+            });
+        }
+    }
+    Ok(output)
+}
+
+fn mutator_applies(
+    mutator: &RegexMutator,
+    placement: &str,
+    target: &str,
+    role: &str,
+    depth: usize,
+) -> bool {
     if !mutator.enabled {
         return false;
     }
 
-    if mutator.target != "history" {
+    if normalize_regex_placement(mutator) != placement {
+        return false;
+    }
+
+    if !regex_target_matches(&mutator.target, target, role) {
         return false;
     }
 
     let start = mutator.depth_range.first().copied().unwrap_or(0);
     let end = mutator.depth_range.get(1).copied().unwrap_or(usize::MAX);
     depth >= start && depth <= end
+}
+
+fn normalize_regex_placement(mutator: &RegexMutator) -> &'static str {
+    if mutator.prompt_only {
+        return "prompt";
+    }
+    if mutator.markdown_only {
+        return "display";
+    }
+    match mutator
+        .placement
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "display" | "ui_display" | "message_display" | "frontend" => "display",
+        "prompt" | "llm_prompt" | "format_prompt" => "prompt",
+        _ if legacy_display_target(&mutator.target) => "display",
+        _ => "prompt",
+    }
+}
+
+fn regex_target_matches(mutator_target: &str, target: &str, role: &str) -> bool {
+    let normalized = normalize_regex_target(mutator_target);
+    normalized == "history"
+        || normalized == target
+        || (normalized == "user_input" && role == "user")
+        || (normalized == "bot_output" && role == "assistant")
+        || (normalized == "system_prompt" && role == "system")
+}
+
+fn normalize_regex_target(target: &str) -> &'static str {
+    match target.to_ascii_lowercase().as_str() {
+        "display" | "frontend" | "message_display" | "bot" | "bot_output" | "assistant" => {
+            "bot_output"
+        }
+        "user" | "user_input" | "input" => "user_input",
+        "system" | "system_prompt" | "preset" | "prompt" => "system_prompt",
+        "world" | "world_info" | "lorebook" | "lore" => "world_info",
+        "history" | "chat_history" => "history",
+        _ => "history",
+    }
+}
+
+fn legacy_display_target(target: &str) -> bool {
+    matches!(
+        target.to_ascii_lowercase().as_str(),
+        "display" | "frontend" | "message_display"
+    )
+}
+
+fn role_regex_target(role: &str) -> &'static str {
+    match role {
+        "user" => "user_input",
+        "assistant" => "bot_output",
+        "system" => "system_prompt",
+        _ => "history",
+    }
 }
 
 fn select_recent_history(
@@ -743,37 +1077,16 @@ fn message_tokens(messages: &[ChatMessage], model: &str) -> usize {
         .sum()
 }
 
-fn apply_macros_to_message(mut message: ChatMessage, vars: &MacroVars) -> ChatMessage {
-    message.content = apply_macros(&message.content, vars);
+fn apply_macros_to_message(
+    mut message: ChatMessage,
+    context: &st_macro_engine::MacroContext,
+) -> ChatMessage {
+    message.content = apply_macros(&message.content, context);
     message
 }
 
-fn apply_macros(text: &str, vars: &MacroVars) -> String {
-    let replacements = [
-        ("{{user}}", vars.user_name.as_str()),
-        ("{{User}}", vars.user_name.as_str()),
-        ("{{USER}}", vars.user_name.as_str()),
-        ("<user>", vars.user_name.as_str()),
-        ("<User>", vars.user_name.as_str()),
-        ("<USER>", vars.user_name.as_str()),
-        ("{{char}}", vars.char_name.as_str()),
-        ("{{Char}}", vars.char_name.as_str()),
-        ("{{CHAR}}", vars.char_name.as_str()),
-        ("<char>", vars.char_name.as_str()),
-        ("<Char>", vars.char_name.as_str()),
-        ("<CHAR>", vars.char_name.as_str()),
-        ("{{input}}", vars.input.as_str()),
-        ("{{Input}}", vars.input.as_str()),
-        ("{{INPUT}}", vars.input.as_str()),
-        ("<input>", vars.input.as_str()),
-        ("<Input>", vars.input.as_str()),
-        ("<INPUT>", vars.input.as_str()),
-    ];
-    let mut output = text.to_string();
-    for (from, to) in replacements {
-        output = output.replace(from, to);
-    }
-    output
+fn apply_macros(text: &str, context: &st_macro_engine::MacroContext) -> String {
+    st_macro_engine::apply_macros(text, context)
 }
 
 fn world_entry_identity(cartridge_id: &str, entry: &WorldEntry) -> String {
@@ -791,6 +1104,17 @@ fn world_entry_source_id(entry: &WorldEntry, index: usize) -> String {
 }
 
 fn key_matches(query: &str, key: &str) -> bool {
+    key_matches_with_options(
+        query,
+        key,
+        WorldMatchOptions {
+            case_sensitive: false,
+            match_whole_words: false,
+        },
+    )
+}
+
+fn key_matches_with_options(query: &str, key: &str, options: WorldMatchOptions) -> bool {
     let key = key.trim();
     if key.is_empty() {
         return false;
@@ -801,18 +1125,85 @@ fn key_matches(query: &str, key: &str) -> bool {
     }
 
     if let Some(pattern) = key.strip_prefix("re:") {
-        return Regex::new(pattern)
+        return compile_st_regex(pattern, options.case_sensitive)
             .map(|regex| regex.is_match(query))
             .unwrap_or(false);
     }
 
     if key.starts_with('/') && key.ends_with('/') && key.len() > 2 {
-        return Regex::new(&key[1..key.len() - 1])
+        return compile_st_regex(&key[1..key.len() - 1], options.case_sensitive)
             .map(|regex| regex.is_match(query))
             .unwrap_or(false);
     }
 
-    query.to_lowercase().contains(&key.to_lowercase())
+    if let Some((pattern, flags)) = parse_slash_regex(key) {
+        let case_sensitive = options.case_sensitive && !flags.contains('i');
+        return compile_st_regex(pattern, case_sensitive)
+            .map(|regex| regex.is_match(query))
+            .unwrap_or(false);
+    }
+
+    text_contains_key(query, key, options)
+}
+
+fn parse_slash_regex(key: &str) -> Option<(&str, &str)> {
+    if !key.starts_with('/') {
+        return None;
+    }
+    let last = key.rfind('/')?;
+    if last == 0 {
+        return None;
+    }
+    Some((&key[1..last], &key[last + 1..]))
+}
+
+fn compile_st_regex(pattern: &str, case_sensitive: bool) -> Result<Regex, regex::Error> {
+    if case_sensitive {
+        Regex::new(pattern)
+    } else {
+        Regex::new(&format!("(?i:{})", pattern))
+    }
+}
+
+fn text_contains_key(query: &str, key: &str, options: WorldMatchOptions) -> bool {
+    if options.case_sensitive {
+        if options.match_whole_words {
+            contains_whole_word(query, key)
+        } else {
+            query.contains(key)
+        }
+    } else {
+        let query = query.to_lowercase();
+        let key = key.to_lowercase();
+        if options.match_whole_words {
+            contains_whole_word(&query, &key)
+        } else {
+            query.contains(&key)
+        }
+    }
+}
+
+fn contains_whole_word(query: &str, key: &str) -> bool {
+    if key.chars().any(|ch| !is_word_boundary_char(ch)) {
+        return query.contains(key);
+    }
+
+    for (start, _) in query.match_indices(key) {
+        let end = start + key.len();
+        let before = query[..start].chars().next_back();
+        let after = query[end..].chars().next();
+        if before.map(is_word_boundary_char).unwrap_or(false)
+            || after.map(is_word_boundary_char).unwrap_or(false)
+        {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn is_word_boundary_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 fn embed_text(text: &str) -> Vec<f32> {
@@ -883,7 +1274,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::dto::{default_prompt_entries, PresetPromptEntry};
+    use crate::application::dto::{default_prompt_entries, ContextStrategy, PresetPromptEntry};
 
     fn history_msg(id: &str, depth: usize, content: &str) -> HistoryMessage {
         HistoryMessage {
@@ -891,6 +1282,31 @@ mod tests {
             role: "assistant".to_string(),
             content: content.to_string(),
             depth,
+        }
+    }
+
+    fn world_entry(id: &str, keys: Vec<&str>, content: &str) -> WorldEntry {
+        WorldEntry {
+            id: Some(id.to_string()),
+            enabled: true,
+            keys: keys.into_iter().map(str::to_string).collect(),
+            content: content.to_string(),
+            secondary_keys: Vec::new(),
+            enable_semantic_search: false,
+            constant: false,
+            selective: false,
+            selective_logic: "and_any".to_string(),
+            case_sensitive: None,
+            match_whole_words: None,
+            scan_depth: None,
+            probability: 100.0,
+            recursive: true,
+            prevent_recursion: false,
+            delay_until_recursion: false,
+            insertion_depth: None,
+            position: "auto".to_string(),
+            order: 0,
+            role: "system".to_string(),
         }
     }
 
@@ -905,6 +1321,7 @@ mod tests {
             regex_mutators: vec![RegexMutator {
                 id: "summary".to_string(),
                 enabled: true,
+                placement: Some("prompt".to_string()),
                 target: "history".to_string(),
                 depth_range: vec![15, 999],
                 pattern: "<text>[\\s\\S]*?</text>\\n<zongjie>([\\s\\S]*?)</zongjie>".to_string(),
@@ -912,11 +1329,15 @@ mod tests {
                 flags: String::new(),
                 sample: String::new(),
                 description: String::new(),
+                markdown_only: false,
+                prompt_only: false,
+                run_on_edit: false,
             }],
             ..PipelineConfig::default()
         };
 
-        let debug = apply_regex_mutators(&mut history, &pipeline, "gpt-4").unwrap();
+        let mut debug = Vec::new();
+        apply_prompt_regex_to_history(&mut history, &pipeline, "gpt-4", &mut debug).unwrap();
         assert_eq!(history[0].content, "<zongjie>short</zongjie>");
         assert_eq!(debug.len(), 1);
     }
@@ -1017,18 +1438,7 @@ mod tests {
 
     #[test]
     fn world_position_defaults_match_legacy_depth_behavior() {
-        let mut entry = WorldEntry {
-            id: None,
-            enabled: true,
-            keys: Vec::new(),
-            content: "lore".to_string(),
-            secondary_keys: Vec::new(),
-            enable_semantic_search: false,
-            insertion_depth: None,
-            position: "auto".to_string(),
-            order: 0,
-            role: "system".to_string(),
-        };
+        let mut entry = world_entry("lore", Vec::new(), "lore");
         assert_eq!(world_position(&entry), "relative");
         entry.insertion_depth = Some(2);
         assert_eq!(world_position(&entry), "in_chat");
@@ -1037,11 +1447,185 @@ mod tests {
     }
 
     #[test]
+    fn world_key_matching_supports_regex_case_and_whole_words() {
+        let loose = WorldMatchOptions {
+            case_sensitive: false,
+            match_whole_words: false,
+        };
+        assert!(key_matches_with_options("Draw the Sword", "sword", loose));
+        assert!(key_matches_with_options(
+            "alpha 123",
+            r"/alpha\s+\d+/i",
+            loose
+        ));
+
+        let strict = WorldMatchOptions {
+            case_sensitive: true,
+            match_whole_words: true,
+        };
+        assert!(!key_matches_with_options("Draw the Sword", "sword", strict));
+        assert!(!key_matches_with_options("swordsman", "sword", strict));
+        assert!(key_matches_with_options("take sword now", "sword", strict));
+    }
+
+    #[test]
+    fn world_secondary_logic_matches_st_filters() {
+        let mut entry = world_entry("lore", vec!["alpha"], "lore");
+        entry.selective = true;
+        entry.secondary_keys = vec!["beta".to_string(), "gamma".to_string()];
+        let options = WorldMatchOptions {
+            case_sensitive: false,
+            match_whole_words: false,
+        };
+
+        entry.selective_logic = "and_any".to_string();
+        assert!(secondary_keys_pass(&entry, "alpha beta", options));
+        entry.selective_logic = "and_all".to_string();
+        assert!(!secondary_keys_pass(&entry, "alpha beta", options));
+        assert!(secondary_keys_pass(&entry, "alpha beta gamma", options));
+        entry.selective_logic = "not_any".to_string();
+        assert!(!secondary_keys_pass(&entry, "alpha beta", options));
+        assert!(secondary_keys_pass(&entry, "alpha delta", options));
+        entry.selective_logic = "not_all".to_string();
+        assert!(secondary_keys_pass(&entry, "alpha beta", options));
+        assert!(!secondary_keys_pass(&entry, "alpha beta gamma", options));
+    }
+
+    #[test]
+    fn world_budget_keeps_constants_then_order_and_marks_skips() {
+        let mut constant = world_entry("constant", Vec::new(), "one");
+        constant.constant = true;
+        constant.order = 100;
+        let mut early = world_entry("early", vec!["a"], "two");
+        early.order = 0;
+        let mut late = world_entry("late", vec!["b"], "three four five six seven eight");
+        late.order = 200;
+
+        let triggers = vec![
+            WorldTrigger {
+                entry: late,
+                trigger: "keyword:b".to_string(),
+                similarity: None,
+                recursion_depth: 0,
+                index: 2,
+                included: true,
+            },
+            WorldTrigger {
+                entry: early,
+                trigger: "keyword:a".to_string(),
+                similarity: None,
+                recursion_depth: 0,
+                index: 1,
+                included: true,
+            },
+            WorldTrigger {
+                entry: constant,
+                trigger: "constant".to_string(),
+                similarity: None,
+                recursion_depth: 0,
+                index: 0,
+                included: true,
+            },
+        ];
+        let strategy = ContextStrategy {
+            world_budget_tokens: Some(2),
+            ..ContextStrategy::default()
+        };
+        let result = apply_world_budget(triggers, 100, &strategy, "gpt-4").unwrap();
+
+        assert_eq!(result[0].entry.id.as_deref(), Some("constant"));
+        assert!(result[0].included);
+        assert_eq!(result[1].entry.id.as_deref(), Some("early"));
+        assert!(result[1].included);
+        assert_eq!(result[2].entry.id.as_deref(), Some("late"));
+        assert!(!result[2].included);
+        assert!(result[2].trigger.starts_with("budget_skipped:"));
+    }
+
+    #[tokio::test]
+    async fn world_entries_trigger_recursively_and_respect_prevent_recursion() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let repo = SqliteRepo::new(pool);
+        let strategy = ContextStrategy {
+            world_budget_tokens: Some(1_000),
+            ..ContextStrategy::default()
+        };
+        let first = world_entry("a", vec!["alpha"], "beta appears here");
+        let second = world_entry("b", vec!["beta"], "recursive lore");
+
+        let result = trigger_world_entries(
+            &repo,
+            "cart",
+            &[first.clone(), second.clone()],
+            "alpha",
+            &strategy,
+            4_000,
+            "gpt-4",
+            0.75,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.iter().filter(|item| item.included).count(), 2);
+        assert!(result
+            .iter()
+            .any(|item| item.entry.id.as_deref() == Some("b")
+                && item.trigger.starts_with("recursive:")));
+
+        let mut blocked = first;
+        blocked.prevent_recursion = true;
+        let result = trigger_world_entries(
+            &repo,
+            "cart",
+            &[blocked, second],
+            "alpha",
+            &strategy,
+            4_000,
+            "gpt-4",
+            0.75,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.iter().filter(|item| item.included).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn world_trigger_skips_disabled_probability_zero_and_delay_until_recursion() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let repo = SqliteRepo::new(pool);
+        let strategy = ContextStrategy {
+            world_budget_tokens: Some(1_000),
+            ..ContextStrategy::default()
+        };
+        let mut disabled = world_entry("disabled", vec!["alpha"], "disabled");
+        disabled.enabled = false;
+        let mut never = world_entry("never", vec!["alpha"], "never");
+        never.probability = 0.0;
+        let mut delayed = world_entry("delayed", vec!["alpha"], "delayed");
+        delayed.delay_until_recursion = true;
+
+        let result = trigger_world_entries(
+            &repo,
+            "cart",
+            &[disabled, never, delayed],
+            "alpha",
+            &strategy,
+            4_000,
+            "gpt-4",
+            0.75,
+        )
+        .await
+        .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn sillytavern_macros_are_replaced() {
-        let vars = MacroVars {
+        let vars = st_macro_engine::MacroContext {
             user_name: "Alice".to_string(),
             char_name: "Soyo".to_string(),
             input: "hello".to_string(),
+            last_message_id: None,
+            variables: HashMap::new(),
         };
 
         assert_eq!(

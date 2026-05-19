@@ -439,6 +439,7 @@ fn extract_character_book_entries(data: &Value) -> Vec<WorldEntry> {
             if is_constant && keys.is_empty() {
                 keys.push("*".to_string());
             }
+            let extensions = entry.get("extensions");
             Some(WorldEntry {
                 id: get_string(entry, "id").or_else(|| Some(format!("st_world_{}", idx + 1))),
                 enabled: !entry
@@ -449,6 +450,58 @@ fn extract_character_book_entries(data: &Value) -> Vec<WorldEntry> {
                 content,
                 secondary_keys: string_array(entry, "secondary_keys").unwrap_or_default(),
                 enable_semantic_search: false,
+                constant: is_constant,
+                selective: entry
+                    .get("selective")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                selective_logic: st_selective_logic(
+                    extensions
+                        .and_then(|ext| ext.get("selectiveLogic"))
+                        .or_else(|| entry.get("selectiveLogic"))
+                        .or_else(|| entry.get("selective_logic")),
+                ),
+                case_sensitive: optional_bool(
+                    extensions
+                        .and_then(|ext| ext.get("case_sensitive"))
+                        .or_else(|| extensions.and_then(|ext| ext.get("caseSensitive")))
+                        .or_else(|| entry.get("case_sensitive")),
+                ),
+                match_whole_words: optional_bool(
+                    extensions
+                        .and_then(|ext| ext.get("match_whole_words"))
+                        .or_else(|| extensions.and_then(|ext| ext.get("matchWholeWords")))
+                        .or_else(|| entry.get("match_whole_words")),
+                ),
+                scan_depth: optional_usize(
+                    extensions
+                        .and_then(|ext| ext.get("scan_depth"))
+                        .or_else(|| entry.get("scan_depth")),
+                ),
+                probability: optional_f32(
+                    entry
+                        .get("probability")
+                        .or_else(|| entry.get("probability_percent")),
+                )
+                .unwrap_or(100.0),
+                recursive: optional_bool(
+                    extensions
+                        .and_then(|ext| ext.get("recursive"))
+                        .or_else(|| entry.get("recursive")),
+                )
+                .unwrap_or(true),
+                prevent_recursion: optional_bool(
+                    extensions
+                        .and_then(|ext| ext.get("prevent_recursion"))
+                        .or_else(|| entry.get("prevent_recursion")),
+                )
+                .unwrap_or(false),
+                delay_until_recursion: optional_bool(
+                    extensions
+                        .and_then(|ext| ext.get("delay_until_recursion"))
+                        .or_else(|| entry.get("delay_until_recursion")),
+                )
+                .unwrap_or(false),
                 insertion_depth: entry
                     .get("extensions")
                     .and_then(|ext| ext.get("depth"))
@@ -486,15 +539,25 @@ fn extract_display_regex_mutators(data: &Value) -> Vec<RegexMutator> {
                 .or_else(|| script.get("disable"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
-                || script
-                    .get("promptOnly")
-                    .or_else(|| script.get("prompt_only"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
             {
                 return None;
             }
 
+            let markdown_only = script
+                .get("markdownOnly")
+                .or_else(|| script.get("markdown_only"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let prompt_only = script
+                .get("promptOnly")
+                .or_else(|| script.get("prompt_only"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let run_on_edit = script
+                .get("runOnEdit")
+                .or_else(|| script.get("run_on_edit"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let pattern = get_string(script, "findRegex")
                 .or_else(|| get_string(script, "find_regex"))
                 .or_else(|| get_string(script, "pattern"))?;
@@ -511,16 +574,85 @@ fn extract_display_regex_mutators(data: &Value) -> Vec<RegexMutator> {
             Some(RegexMutator {
                 id,
                 enabled: true,
-                target: "display".to_string(),
+                placement: Some(if prompt_only {
+                    "prompt".to_string()
+                } else {
+                    "display".to_string()
+                }),
+                target: if prompt_only {
+                    st_prompt_regex_target(&pattern)
+                } else {
+                    "bot_output".to_string()
+                },
                 depth_range: Vec::new(),
                 pattern,
                 replacement,
                 flags,
                 sample,
                 description,
+                markdown_only,
+                prompt_only,
+                run_on_edit,
             })
         })
         .collect()
+}
+
+fn st_prompt_regex_target(pattern: &str) -> String {
+    let lowered = pattern.to_ascii_lowercase();
+    if lowered.contains("<gui") || lowered.contains("<ztl") || lowered.contains("<xuan") {
+        "bot_output".to_string()
+    } else {
+        "history".to_string()
+    }
+}
+
+fn st_selective_logic(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::Number(n)) => match n.as_i64().unwrap_or(0) {
+            1 => "and_all",
+            2 => "not_any",
+            3 => "not_all",
+            _ => "and_any",
+        },
+        Some(Value::String(s)) => match s.to_ascii_lowercase().as_str() {
+            "and_all" | "all" | "1" => "and_all",
+            "not_any" | "none" | "2" => "not_any",
+            "not_all" | "3" => "not_all",
+            _ => "and_any",
+        },
+        _ => "and_any",
+    }
+    .to_string()
+}
+
+fn optional_bool(value: Option<&Value>) -> Option<bool> {
+    match value? {
+        Value::Bool(v) => Some(*v),
+        Value::Number(n) => Some(n.as_i64().unwrap_or(0) != 0),
+        Value::String(s) => match s.to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn optional_usize(value: Option<&Value>) -> Option<usize> {
+    match value? {
+        Value::Number(n) => n.as_u64().map(|v| v as usize),
+        Value::String(s) => s.parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+fn optional_f32(value: Option<&Value>) -> Option<f32> {
+    match value? {
+        Value::Number(n) => n.as_f64().map(|v| v as f32),
+        Value::String(s) => s.parse::<f32>().ok(),
+        _ => None,
+    }
 }
 
 fn string_array(data: &Value, key: &str) -> Option<Vec<String>> {
@@ -544,6 +676,55 @@ fn string_array(data: &Value, key: &str) -> Option<Vec<String>> {
             })
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn st_character_book_fields_are_preserved_on_import_mapping() {
+        let card = json!({
+            "character_book": {
+                "entries": [{
+                    "content": "secret lore",
+                    "keys": ["alpha"],
+                    "secondary_keys": ["beta"],
+                    "constant": true,
+                    "selective": true,
+                    "insertion_order": 42,
+                    "extensions": {
+                        "depth": 3,
+                        "selectiveLogic": 1,
+                        "case_sensitive": true,
+                        "matchWholeWords": true,
+                        "scan_depth": 2,
+                        "recursive": false,
+                        "prevent_recursion": true,
+                        "delay_until_recursion": true
+                    },
+                    "probability": 25
+                }]
+            }
+        });
+
+        let entries = extract_character_book_entries(&card);
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert!(entry.constant);
+        assert!(entry.selective);
+        assert_eq!(entry.selective_logic, "and_all");
+        assert_eq!(entry.case_sensitive, Some(true));
+        assert_eq!(entry.match_whole_words, Some(true));
+        assert_eq!(entry.scan_depth, Some(2));
+        assert_eq!(entry.probability, 25.0);
+        assert!(!entry.recursive);
+        assert!(entry.prevent_recursion);
+        assert!(entry.delay_until_recursion);
+        assert_eq!(entry.insertion_depth, Some(3));
+        assert_eq!(entry.order, 42);
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -619,6 +800,7 @@ let card = null;
 let pipeline = { regex_mutators: [] };
 let currentChat = null;
 let busy = false;
+let chatVariables = {};
 
 const el = (id) => document.getElementById(id);
 const inputEl = () => el("send_textarea") || el("input");
@@ -722,12 +904,14 @@ async function loadChats() {
 
 async function newChat() {
   currentChat = await SDK.createChat(`Chat with ${card.name}`);
+  chatVariables = {};
   renderWelcome();
   await loadChats();
 }
 
 async function openChat(chat) {
   currentChat = chat;
+  chatVariables = await loadChatVariables(chat.id);
   const messages = await SDK.getMessages(chat.id);
   el("messages").innerHTML = "";
   if (messages.length === 0) {
@@ -736,6 +920,16 @@ async function openChat(chat) {
     messages.forEach((message) => addMessage(message.role, message.content));
   }
   await loadChats();
+}
+
+async function loadChatVariables(chatId) {
+  try {
+    const rows = await SDK.listChatVariables(chatId);
+    return Object.fromEntries(rows.map((row) => [row.name, row.value]));
+  } catch (error) {
+    console.warn("Failed to load chat variables", error);
+    return {};
+  }
 }
 
 function renderWelcome() {
@@ -875,7 +1069,7 @@ function appendGuiPart(target, html) {
 function applyDisplayRegex(content) {
   let output = String(content || "");
   for (const mutator of pipeline.regex_mutators || []) {
-    if (mutator.enabled === false || !["display", "frontend", "message_display"].includes(mutator.target)) {
+    if (mutator.enabled === false || !regexRunsOnDisplay(mutator)) {
       continue;
     }
     try {
@@ -888,6 +1082,14 @@ function applyDisplayRegex(content) {
   return output;
 }
 
+function regexRunsOnDisplay(mutator) {
+  const placement = String(mutator.placement || "").toLowerCase();
+  const target = String(mutator.target || "").toLowerCase();
+  if (mutator.prompt_only || placement === "prompt") return false;
+  if (mutator.markdown_only || placement === "display" || placement === "ui_display") return true;
+  return ["display", "frontend", "message_display", "bot_output"].includes(target);
+}
+
 function extractSillyTavernRegexScripts(rawCard) {
   const data = rawCard?.data || rawCard || {};
   const scripts = data.extensions?.regex_scripts || data.regex_scripts || rawCard?.extensions?.regex_scripts || [];
@@ -897,6 +1099,7 @@ function extractSillyTavernRegexScripts(rawCard) {
     .map((script, index) => ({
       id: script.scriptName || script.name || `st_display_regex_${index + 1}`,
       enabled: true,
+      placement: "display",
       target: "display",
       depth_range: [],
       pattern: script.findRegex || script.find_regex || script.pattern || "",
@@ -904,6 +1107,9 @@ function extractSillyTavernRegexScripts(rawCard) {
       flags: script.flags || "gs",
       sample: script.sample || "",
       description: script.description || "",
+      markdown_only: !!(script.markdownOnly || script.markdown_only),
+      prompt_only: false,
+      run_on_edit: !!(script.runOnEdit || script.run_on_edit),
     }))
     .filter((script) => script.pattern);
 }
@@ -922,6 +1128,7 @@ function applySillyTavernMacros(content) {
   const userName = "You";
   const charName = card?.name || "Character";
   const input = inputEl()?.value || "";
+  let output = String(content || "");
   const replacements = [
     ["{{user}}", userName], ["{{User}}", userName], ["{{USER}}", userName],
     ["<user>", userName], ["<User>", userName], ["<USER>", userName],
@@ -930,9 +1137,46 @@ function applySillyTavernMacros(content) {
     ["{{input}}", input], ["{{Input}}", input], ["{{INPUT}}", input],
     ["<input>", input], ["<Input>", input], ["<INPUT>", input],
   ];
-  let output = String(content || "");
   for (const [from, to] of replacements) output = output.split(from).join(to);
-  return output;
+  return output.replace(/\{\{([^{}]+)\}\}/g, (match, token) => resolveSillyTavernMacro(token.trim(), match));
+}
+
+function resolveSillyTavernMacro(token, fallback) {
+  const now = new Date();
+  if (token === "time" || token === "Time") {
+    return now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  if (token === "date" || token === "Date") {
+    return now.toLocaleDateString();
+  }
+  if (token === "lastMessageId" || token === "lastmessageid") {
+    return document.querySelector(".mes:last-child")?.dataset?.messageId || "";
+  }
+  const getVar = token.match(/^getvar(?:::|:)(.+)$/);
+  if (getVar) return chatVariables[getVar[1].trim()] || "";
+  const random = token.match(/^(?:random|pick)(?:::|:)([\s\S]+)$/);
+  if (random) {
+    const options = random[1].split(",").map((item) => item.trim()).filter(Boolean);
+    return options.length ? options[Math.floor(Math.random() * options.length)] : "";
+  }
+  const roll = token.match(/^roll:([0-9]*)d?([0-9]+)$/i);
+  if (roll) {
+    const count = Math.max(1, Number(roll[1] || 1));
+    const sides = Math.max(1, Number(roll[2]));
+    let total = 0;
+    for (let i = 0; i < count; i += 1) total += 1 + Math.floor(Math.random() * sides);
+    return String(total);
+  }
+  const calc = token.match(/^calc:([0-9+\-*/().\s]+)$/);
+  if (calc) {
+    try {
+      const value = Function(`"use strict"; return (${calc[1]});`)();
+      return Number.isFinite(value) ? String(Number(value.toFixed(6))) : fallback;
+    } catch (_error) {
+      return fallback;
+    }
+  }
+  return fallback;
 }
 
 function extractGuiHtml(content) {

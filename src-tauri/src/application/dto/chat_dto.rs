@@ -192,6 +192,26 @@ pub struct WorldEntry {
     #[serde(default)]
     pub enable_semantic_search: bool,
     #[serde(default)]
+    pub constant: bool,
+    #[serde(default)]
+    pub selective: bool,
+    #[serde(default = "default_selective_logic")]
+    pub selective_logic: String,
+    #[serde(default)]
+    pub case_sensitive: Option<bool>,
+    #[serde(default)]
+    pub match_whole_words: Option<bool>,
+    #[serde(default)]
+    pub scan_depth: Option<usize>,
+    #[serde(default = "default_world_probability")]
+    pub probability: f32,
+    #[serde(default = "default_world_recursive")]
+    pub recursive: bool,
+    #[serde(default)]
+    pub prevent_recursion: bool,
+    #[serde(default)]
+    pub delay_until_recursion: bool,
+    #[serde(default)]
     pub insertion_depth: Option<usize>,
     #[serde(default = "default_world_position")]
     pub position: String,
@@ -211,6 +231,18 @@ fn default_system_role() -> String {
 
 fn default_world_position() -> String {
     "auto".to_string()
+}
+
+fn default_selective_logic() -> String {
+    "and_any".to_string()
+}
+
+fn default_world_probability() -> f32 {
+    100.0
+}
+
+fn default_world_recursive() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +278,20 @@ pub struct ContextStrategy {
     pub rag_similarity_threshold: f32,
     #[serde(default = "default_history_fetch_limit")]
     pub history_fetch_limit: usize,
+    #[serde(default = "default_world_scan_depth")]
+    pub world_scan_depth: usize,
+    #[serde(default = "default_world_budget_percent")]
+    pub world_budget_percent: usize,
+    #[serde(default)]
+    pub world_budget_tokens: Option<usize>,
+    #[serde(default = "default_world_max_recursion_steps")]
+    pub world_max_recursion_steps: usize,
+    #[serde(default = "default_true")]
+    pub world_include_names: bool,
+    #[serde(default)]
+    pub world_case_sensitive: bool,
+    #[serde(default)]
+    pub world_match_whole_words: bool,
 }
 
 impl Default for ContextStrategy {
@@ -255,6 +301,13 @@ impl Default for ContextStrategy {
             rag_fetch_count: default_rag_fetch_count(),
             rag_similarity_threshold: default_rag_similarity_threshold(),
             history_fetch_limit: default_history_fetch_limit(),
+            world_scan_depth: default_world_scan_depth(),
+            world_budget_percent: default_world_budget_percent(),
+            world_budget_tokens: None,
+            world_max_recursion_steps: default_world_max_recursion_steps(),
+            world_include_names: default_true(),
+            world_case_sensitive: false,
+            world_match_whole_words: false,
         }
     }
 }
@@ -275,11 +328,29 @@ fn default_history_fetch_limit() -> usize {
     100
 }
 
+fn default_world_scan_depth() -> usize {
+    4
+}
+
+fn default_world_budget_percent() -> usize {
+    25
+}
+
+fn default_world_max_recursion_steps() -> usize {
+    2
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegexMutator {
     pub id: String,
     #[serde(default = "default_regex_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub placement: Option<String>,
     #[serde(default = "default_history_target")]
     pub target: String,
     #[serde(default)]
@@ -292,6 +363,12 @@ pub struct RegexMutator {
     pub sample: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub markdown_only: bool,
+    #[serde(default)]
+    pub prompt_only: bool,
+    #[serde(default)]
+    pub run_on_edit: bool,
 }
 
 fn default_regex_enabled() -> bool {
@@ -340,6 +417,8 @@ pub struct WorldTriggerDebug {
     pub keys: Vec<String>,
     pub trigger: String,
     pub similarity: Option<f32>,
+    pub recursion_depth: usize,
+    pub included: bool,
     pub insertion_depth: Option<usize>,
     pub role: String,
     pub content: String,

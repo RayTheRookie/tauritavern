@@ -1,8 +1,8 @@
 use crate::application::dto::{ChatChunkPayload, PromptDryRunResult};
-use crate::application::services::prompt_engine;
+use crate::application::services::{prompt_engine, st_script_engine};
 use crate::infrastructure::apis::LlmHttpClient;
 use crate::infrastructure::credentials::CredentialService;
-use crate::infrastructure::database::MessageRow;
+use crate::infrastructure::database::{MessageRow, MessageSwipeRow};
 use crate::infrastructure::fs;
 use crate::AppState;
 use chrono::Utc;
@@ -17,6 +17,22 @@ pub async fn handle_chat(
     user_message: &str,
     window: &tauri::Window,
 ) -> Result<String, String> {
+    if let Some(result) =
+        st_script_engine::execute_slash_script(state, cartridge_id, chat_id, user_message).await
+    {
+        let output = result?;
+        let _ = window.emit(
+            "chat-chunk",
+            ChatChunkPayload {
+                chat_id: chat_id.to_string(),
+                content: output.clone(),
+                done: true,
+                error: false,
+            },
+        );
+        return Ok(output);
+    }
+
     let cartridge = state
         .repo
         .get_cartridge(cartridge_id)
@@ -143,7 +159,18 @@ pub async fn handle_chat(
             chat_id: chat_id.to_string(),
             role: "assistant".to_string(),
             content: full_response.clone(),
-            created_at: response_ts,
+            created_at: response_ts.clone(),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .repo
+        .insert_message_swipe(&MessageSwipeRow {
+            id: Uuid::new_v4().to_string(),
+            message_id: response_msg_id.clone(),
+            swipe_index: 0,
+            content: full_response.clone(),
+            created_at: response_ts.clone(),
         })
         .await
         .map_err(|e| e.to_string())?;
