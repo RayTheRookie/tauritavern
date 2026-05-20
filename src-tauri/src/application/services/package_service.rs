@@ -727,7 +727,7 @@ mod tests {
     }
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ClassicCardData {
     name: String,
     description: String,
@@ -737,6 +737,20 @@ struct ClassicCardData {
     mes_example: String,
     creator_notes: String,
     alternate_greetings: Vec<String>,
+}
+
+pub fn refresh_sillytavern_classic_runtime(dest_dir: &Path) -> Result<(), String> {
+    if !dest_dir.join("sillytavern_card.json").exists() {
+        return Ok(());
+    }
+    let card_data_path = dest_dir.join("ui").join("card-data.json");
+    if !card_data_path.exists() {
+        return Ok(());
+    }
+    let card_data = fs::load_json::<ClassicCardData>(&card_data_path)?;
+    write_classic_ui(dest_dir, &card_data)?;
+    copy_sdk_to_cartridge(dest_dir)?;
+    Ok(())
 }
 
 fn write_classic_ui(dest_dir: &Path, card_data: &ClassicCardData) -> Result<(), String> {
@@ -775,7 +789,10 @@ const CLASSIC_INDEX: &str = r#"<!doctype html>
           <strong id="top-name">Character</strong>
           <span>SillyTavern Classic</span>
         </div>
-        <button id="toggle-lore">Card</button>
+        <div class="top-actions">
+          <button id="open-prompt-viewer">Prompt</button>
+          <button id="toggle-lore">Card</button>
+        </div>
       </header>
       <section id="chat" class="messages"><div id="messages" class="messages-inner"></div></section>
       <footer class="composer">
@@ -789,6 +806,23 @@ const CLASSIC_INDEX: &str = r#"<!doctype html>
       <h3>Scenario</h3><p id="scenario"></p>
       <h3>Example Dialogue</h3><pre id="examples"></pre>
     </aside>
+  </div>
+  <div id="prompt-viewer" class="prompt-viewer hidden" role="dialog" aria-modal="true" aria-label="Prompt Viewer">
+    <div class="prompt-viewer-panel">
+      <header class="prompt-viewer-head">
+        <div>
+          <h2>Prompt Viewer</h2>
+          <span>Dry-run the next prompt without sending it to the model.</span>
+        </div>
+        <button id="close-prompt-viewer">Close</button>
+      </header>
+      <div class="prompt-viewer-controls">
+        <textarea id="prompt-viewer-input" rows="3" placeholder="Simulated next user message..."></textarea>
+        <button id="refresh-prompt-viewer">Refresh</button>
+      </div>
+      <div id="prompt-viewer-summary" class="prompt-viewer-summary"></div>
+      <div id="prompt-viewer-body" class="prompt-viewer-body"></div>
+    </div>
   </div>
 </body>
 </html>
@@ -865,6 +899,12 @@ async function init() {
   el("new-chat").addEventListener("click", newChat);
   sendButtonEl().addEventListener("click", send);
   el("toggle-lore").addEventListener("click", () => el("lore").classList.toggle("hidden"));
+  el("open-prompt-viewer").addEventListener("click", openPromptViewer);
+  el("close-prompt-viewer").addEventListener("click", closePromptViewer);
+  el("refresh-prompt-viewer").addEventListener("click", refreshPromptViewer);
+  el("prompt-viewer").addEventListener("click", (event) => {
+    if (event.target === el("prompt-viewer")) closePromptViewer();
+  });
   inputEl().addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -982,12 +1022,139 @@ async function sendText(text) {
   }
 }
 
-function handleGuiCommand(command) {
+async function openPromptViewer() {
+  const viewer = el("prompt-viewer");
+  el("prompt-viewer-input").value = inputEl().value.trim();
+  viewer.classList.remove("hidden");
+  await refreshPromptViewer();
+}
+
+function closePromptViewer() {
+  el("prompt-viewer").classList.add("hidden");
+}
+
+async function refreshPromptViewer() {
+  if (!currentChat) return;
+  const summary = el("prompt-viewer-summary");
+  const body = el("prompt-viewer-body");
+  const input = el("prompt-viewer-input").value.trim() || inputEl().value.trim() || " ";
+  summary.textContent = "Building prompt dry run...";
+  body.innerHTML = "";
+  try {
+    const dryRun = await SDK.dryRunPromptPipeline(currentChat.id, input);
+    renderPromptViewer(dryRun);
+  } catch (error) {
+    summary.textContent = "Prompt dry run failed.";
+    body.innerHTML = `<pre class="prompt-error">${escapeHtml(String(error))}</pre>`;
+  }
+}
+
+function renderPromptViewer(dryRun) {
+  const messages = dryRun?.messages || [];
+  const triggers = dryRun?.world_triggers || [];
+  const includedWorld = triggers.filter((trigger) => trigger.included);
+  const regexMutations = dryRun?.regex_mutations || [];
+  const insertions = dryRun?.insertions || [];
+  const recalls = dryRun?.rag_recalls || [];
+  const budget = dryRun?.budget || {};
+
+  el("prompt-viewer-summary").innerHTML = [
+    promptChip(`${messages.length} messages`),
+    promptChip(`${includedWorld.length}/${triggers.length} world entries`),
+    promptChip(`${regexMutations.length} regex changes`),
+    promptChip(`${budget.total_tokens ?? 0}/${budget.max_context_tokens ?? "?"} tokens`),
+  ].join("");
+
+  const sections = [
+    promptSection("Final Messages", renderPromptMessages(messages), true),
+    promptSection("World Info", renderWorldTriggers(triggers), true),
+    promptSection("Insertions", renderInsertions(insertions), false),
+    promptSection("Regex Mutations", renderRegexMutations(regexMutations), false),
+    promptSection("RAG Recalls", renderRagRecalls(recalls), false),
+    promptSection("Budget", `<pre>${escapeHtml(JSON.stringify(budget, null, 2))}</pre>`, false),
+    promptSection("Raw Payload", `<pre>${escapeHtml(JSON.stringify(dryRun?.payload || {}, null, 2))}</pre>`, false),
+    promptSection("Final Text", `<pre>${escapeHtml(dryRun?.final_text || "")}</pre>`, false),
+  ];
+  el("prompt-viewer-body").innerHTML = sections.join("");
+}
+
+function promptChip(text) {
+  return `<span class="prompt-chip">${escapeHtml(text)}</span>`;
+}
+
+function promptSection(title, content, open) {
+  return `<details class="prompt-section" ${open ? "open" : ""}><summary>${escapeHtml(title)}</summary>${content}</details>`;
+}
+
+function renderPromptMessages(messages) {
+  if (!messages.length) return `<div class="prompt-empty">No messages.</div>`;
+  return messages.map((message, index) => `
+    <article class="prompt-message">
+      <div class="prompt-message-head"><span>${index + 1}</span><strong>${escapeHtml(message.role || "message")}</strong></div>
+      <pre>${escapeHtml(message.content || "")}</pre>
+    </article>
+  `).join("");
+}
+
+function renderWorldTriggers(triggers) {
+  if (!triggers.length) return `<div class="prompt-empty">No world info entries were evaluated.</div>`;
+  return triggers.map((trigger) => {
+    const status = trigger.included ? "included" : "skipped";
+    const label = trigger.id || (trigger.keys || []).join(", ") || "world entry";
+    const depth = trigger.insertion_depth == null ? "top" : `depth ${trigger.insertion_depth}`;
+    return `
+      <article class="prompt-row ${trigger.included ? "included" : "skipped"}">
+        <div><strong>${escapeHtml(status)}</strong> ${escapeHtml(label)}</div>
+        <div class="prompt-meta">${escapeHtml(trigger.trigger || "")} | ${escapeHtml(trigger.role || "system")} | ${escapeHtml(depth)} | recursion ${trigger.recursion_depth ?? 0}</div>
+        <pre>${escapeHtml(trigger.content || "")}</pre>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderInsertions(insertions) {
+  if (!insertions.length) return `<div class="prompt-empty">No explicit insertion records.</div>`;
+  return insertions.map((insertion) => `
+    <article class="prompt-row included">
+      <div><strong>${escapeHtml(insertion.label || "insertion")}</strong></div>
+      <div class="prompt-meta">index ${insertion.index ?? 0} | depth ${insertion.depth ?? 0} | ${escapeHtml(insertion.role || "system")}</div>
+      <pre>${escapeHtml(insertion.content || "")}</pre>
+    </article>
+  `).join("");
+}
+
+function renderRegexMutations(mutations) {
+  if (!mutations.length) return `<div class="prompt-empty">No prompt regex mutation changed text.</div>`;
+  return mutations.map((mutation) => `
+    <article class="prompt-row included">
+      <div><strong>${escapeHtml(mutation.mutator_id || "regex")}</strong></div>
+      <div class="prompt-meta">${escapeHtml(mutation.role || "")} | depth ${mutation.depth ?? 0} | ${mutation.before_tokens ?? 0} -> ${mutation.after_tokens ?? 0} tokens</div>
+      <div class="prompt-diff">
+        <pre>${escapeHtml(mutation.before || "")}</pre>
+        <pre>${escapeHtml(mutation.after || "")}</pre>
+      </div>
+    </article>
+  `).join("");
+}
+
+function renderRagRecalls(recalls) {
+  if (!recalls.length) return `<div class="prompt-empty">No RAG recalls.</div>`;
+  return recalls.map((recall) => `
+    <article class="prompt-row included">
+      <div><strong>${escapeHtml(recall.id || "recall")}</strong></div>
+      <div class="prompt-meta">${escapeHtml(recall.source_type || "")} | similarity ${Number(recall.similarity || 0).toFixed(3)}</div>
+      <pre>${escapeHtml(recall.content || "")}</pre>
+    </article>
+  `).join("");
+}
+
+async function handleGuiCommand(command) {
   const raw = String(command || "").trim();
   if (!raw) return Promise.resolve();
   const parts = raw.split(/\|(?=\/)/g).map((part) => part.trim()).filter(Boolean);
   let pending = "";
   let shouldTrigger = false;
+  let pipe = "";
 
   for (const part of parts.length ? parts : [raw]) {
     if (/^\/send\b/i.test(part)) {
@@ -1002,6 +1169,8 @@ function handleGuiCommand(command) {
       pending = inputEl().value.trim();
     } else if (/^\/trigger\b/i.test(part) || /^\/gen\b/i.test(part)) {
       shouldTrigger = true;
+    } else if (/^\//.test(part) && currentChat) {
+      pipe = await SDK.executeCommand(currentChat.id, part.replace(/\{\{pipe\}\}/gi, pipe));
     }
   }
 
@@ -1037,7 +1206,9 @@ function replaceMessageContent(container, role, content) {
   }
   target.replaceChildren();
   const rawContent = applySillyTavernMacros(String(content || ""));
-  const displayContent = role === "assistant" ? applySillyTavernMacros(applyDisplayRegex(rawContent)) : rawContent;
+  const displayContent = role === "assistant"
+    ? applySillyTavernMacros(applyDisplayRegex(rawContent, "assistant"))
+    : applySillyTavernMacros(applyDisplayRegex(rawContent, "user"));
   const parts = role === "assistant" ? splitDisplayParts(displayContent) : [{ type: "text", content: displayContent }];
   const hasGui = parts.some((part) => part.type === "html");
   container.classList.toggle("gui-message", hasGui);
@@ -1066,10 +1237,10 @@ function appendGuiPart(target, html) {
   target.appendChild(iframe);
 }
 
-function applyDisplayRegex(content) {
+function applyDisplayRegex(content, role = "assistant") {
   let output = String(content || "");
   for (const mutator of pipeline.regex_mutators || []) {
-    if (mutator.enabled === false || !regexRunsOnDisplay(mutator)) {
+    if (mutator.enabled === false || !regexRunsOnDisplay(mutator, role)) {
       continue;
     }
     try {
@@ -1082,10 +1253,12 @@ function applyDisplayRegex(content) {
   return output;
 }
 
-function regexRunsOnDisplay(mutator) {
+function regexRunsOnDisplay(mutator, role = "assistant") {
   const placement = String(mutator.placement || "").toLowerCase();
   const target = String(mutator.target || "").toLowerCase();
   if (mutator.prompt_only || placement === "prompt") return false;
+  if (role === "user" && mutator.run_on_edit) return true;
+  if (role === "user") return ["user", "user_input", "input"].includes(target);
   if (mutator.markdown_only || placement === "display" || placement === "ui_display") return true;
   return ["display", "frontend", "message_display", "bot_output"].includes(target);
 }
@@ -1318,6 +1491,15 @@ function scrollChatToBottom(force = true) {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function getContext() {
   return {
     name1: "You",
@@ -1420,6 +1602,7 @@ p, pre { color: #bdb3c8; line-height: 1.55; white-space: pre-wrap; }
   background: #17151d;
 }
 .topbar span { display: block; color: #8d829c; font-size: .75rem; margin-top: 2px; }
+.top-actions { display: flex; gap: 8px; align-items: center; }
 button {
   border: 1px solid #3b3549;
   background: #24202f;
@@ -1527,6 +1710,139 @@ textarea {
   outline: none;
 }
 textarea:focus { border-color: #9d7cff; }
+.prompt-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: clamp(10px, 2vw, 24px);
+  background: rgba(8, 7, 12, 0.72);
+}
+.prompt-viewer-panel {
+  width: min(1180px, 100%);
+  height: min(860px, 100%);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  background: #14121a;
+  border: 1px solid #3b3549;
+  border-radius: 10px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+.prompt-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid #2d2938;
+  background: #1a1722;
+}
+.prompt-viewer-head h2 { margin: 0 0 4px; }
+.prompt-viewer-head span { color: #8d829c; font-size: .78rem; }
+.prompt-viewer-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid #2d2938;
+}
+.prompt-viewer-controls textarea { min-height: 74px; max-height: 160px; }
+.prompt-viewer-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #2d2938;
+}
+.prompt-chip {
+  border: 1px solid #3b3549;
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #dcd3e8;
+  background: #201c2a;
+  font-size: .78rem;
+}
+.prompt-viewer-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  scrollbar-gutter: stable;
+}
+.prompt-section {
+  border: 1px solid #302b3c;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  background: #181620;
+  overflow: hidden;
+}
+.prompt-section summary {
+  cursor: pointer;
+  padding: 11px 13px;
+  color: #f3eef8;
+  background: #1f1b29;
+  border-bottom: 1px solid #302b3c;
+}
+.prompt-message,
+.prompt-row {
+  margin: 12px;
+  padding: 12px;
+  border: 1px solid #302b3c;
+  border-radius: 8px;
+  background: #111016;
+}
+.prompt-row.included { border-color: #4c7a58; }
+.prompt-row.skipped { opacity: .68; }
+.prompt-message-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+  color: #c9b6ff;
+}
+.prompt-message-head span {
+  min-width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #2a2437;
+  color: #f3eef8;
+  font-size: .72rem;
+}
+.prompt-meta {
+  color: #8d829c;
+  font-size: .76rem;
+  margin-top: 4px;
+}
+.prompt-message pre,
+.prompt-row pre,
+.prompt-section > pre,
+.prompt-error {
+  margin: 9px 0 0;
+  max-height: 380px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 7px;
+  background: #0c0b10;
+  color: #d8cedf;
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: .78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.prompt-diff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+.prompt-empty {
+  margin: 12px;
+  color: #8d829c;
+}
 .hidden { display: none; }
 @media (max-width: 1180px) {
   .shell { grid-template-columns: minmax(200px, 240px) minmax(0, 1fr); }
@@ -1538,5 +1854,9 @@ textarea:focus { border-color: #9d7cff; }
   .messages { padding: 10px; }
   .message { max-width: 100%; }
   .gui-frame { min-height: 360px; }
+  .topbar { padding: 0 10px; }
+  .top-actions button { padding: 7px 9px; }
+  .prompt-viewer-controls { grid-template-columns: 1fr; }
+  .prompt-diff { grid-template-columns: 1fr; }
 }
 "#;

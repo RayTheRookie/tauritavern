@@ -8,7 +8,7 @@ use crate::infrastructure::apis::LlmHttpClient;
 use crate::infrastructure::database::{MessageRow, RagMemoryRow, SqliteRepo};
 use crate::infrastructure::fs;
 use chrono::Utc;
-use regex::Regex;
+use fancy_regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -125,9 +125,7 @@ pub async fn render_prompt(
         });
     }
 
-    let mut regex_mutations = Vec::new();
     let mut history = build_history(history_rows);
-    apply_prompt_regex_to_history(&mut history, &pipeline, model_name, &mut regex_mutations)?;
 
     let variables = repo
         .list_chat_variables(chat_id)
@@ -151,6 +149,15 @@ pub async fn render_prompt(
         variables,
     };
 
+    let mut regex_mutations = Vec::new();
+    apply_prompt_regex_to_history(
+        &mut history,
+        &pipeline,
+        &macro_context,
+        model_name,
+        &mut regex_mutations,
+    )?;
+
     let world_scan_text = build_world_scan_buffer(&history, &strategy, &macro_context);
     let world_triggers = trigger_world_entries(
         repo,
@@ -158,6 +165,7 @@ pub async fn render_prompt(
         &world_entries,
         &world_scan_text,
         &strategy,
+        &macro_context,
         max_context_tokens,
         model_name,
         world_threshold,
@@ -179,7 +187,7 @@ pub async fn render_prompt(
             label: format!("preset:{}", entry.id),
             role: normalize_role(&entry.role),
             content: apply_prompt_regex_to_text(
-                entry.content,
+                apply_macros(&entry.content, &macro_context),
                 &pipeline,
                 "system_prompt",
                 0,
@@ -210,7 +218,7 @@ pub async fn render_prompt(
             ),
             role: normalize_role(&entry.role),
             content: apply_prompt_regex_to_text(
-                entry.content.clone(),
+                apply_macros(&entry.content, &macro_context),
                 &pipeline,
                 "world_info",
                 entry.insertion_depth.unwrap_or(0),
@@ -516,6 +524,7 @@ async fn trigger_world_entries(
     entries: &[WorldEntry],
     scan_text: &str,
     strategy: &crate::application::dto::ContextStrategy,
+    macro_context: &st_macro_engine::MacroContext,
     max_context_tokens: usize,
     model: &str,
     threshold: f32,
@@ -526,6 +535,7 @@ async fn trigger_world_entries(
         .unwrap_or_default();
     let mut seen = HashSet::new();
     let mut triggers = Vec::new();
+    let mut scan_pool = vec![scan_text.to_string()];
     let mut current_buffers = vec![scan_text.to_string()];
     let max_depth = strategy.world_max_recursion_steps;
 
@@ -533,7 +543,7 @@ async fn trigger_world_entries(
         if current_buffers.is_empty() {
             break;
         }
-        let buffer = current_buffers.join("\n\n");
+        let buffer = scan_pool.join("\n\n");
         let mut next_buffers = Vec::new();
 
         for (idx, entry) in entries.iter().enumerate() {
@@ -552,6 +562,7 @@ async fn trigger_world_entries(
                 &query_vector,
                 &indexed_scores,
                 strategy,
+                macro_context,
                 threshold,
                 recursion_depth,
             ) {
@@ -563,12 +574,13 @@ async fn trigger_world_entries(
                     trigger.trigger = format!("recursive:{}", trigger.trigger);
                 }
                 if !entry.prevent_recursion {
-                    next_buffers.push(entry.content.clone());
+                    next_buffers.push(apply_macros(&entry.content, macro_context));
                 }
                 triggers.push(trigger);
             }
         }
 
+        scan_pool.extend(next_buffers.iter().cloned());
         current_buffers = next_buffers;
     }
 
@@ -619,6 +631,7 @@ fn evaluate_world_entry(
     query_vector: &[f32],
     indexed_scores: &HashMap<String, f32>,
     strategy: &crate::application::dto::ContextStrategy,
+    macro_context: &st_macro_engine::MacroContext,
     threshold: f32,
     recursion_depth: usize,
 ) -> Option<WorldTrigger> {
@@ -645,6 +658,7 @@ fn evaluate_world_entry(
     let primary_hit = entry
         .keys
         .iter()
+        .map(|key| apply_macros(key, macro_context))
         .find(|key| key_matches_with_options(scan_text, key, options));
 
     let mut trigger = primary_hit.map(|key| format!("keyword:{}", key));
@@ -654,6 +668,7 @@ fn evaluate_world_entry(
         let source_id = world_entry_source_id(entry, index);
         let score = indexed_scores.get(&source_id).copied().unwrap_or_else(|| {
             let index_text = format!("{}\n{}", entry.keys.join("\n"), entry.content);
+            let index_text = apply_macros(&index_text, macro_context);
             let entry_vector = embed_text(&index_text);
             cosine_similarity(query_vector, &entry_vector)
         });
@@ -664,7 +679,7 @@ fn evaluate_world_entry(
     }
 
     let mut trigger = trigger?;
-    if !secondary_keys_pass(entry, scan_text, options) {
+    if !secondary_keys_pass(entry, scan_text, options, macro_context) {
         return None;
     }
     if entry.selective && !entry.secondary_keys.is_empty() {
@@ -707,7 +722,12 @@ fn world_match_options(
     }
 }
 
-fn secondary_keys_pass(entry: &WorldEntry, scan_text: &str, options: WorldMatchOptions) -> bool {
+fn secondary_keys_pass(
+    entry: &WorldEntry,
+    scan_text: &str,
+    options: WorldMatchOptions,
+    macro_context: &st_macro_engine::MacroContext,
+) -> bool {
     if !entry.selective || entry.secondary_keys.is_empty() {
         return true;
     }
@@ -715,7 +735,8 @@ fn secondary_keys_pass(entry: &WorldEntry, scan_text: &str, options: WorldMatchO
     let matches: Vec<bool> = entry
         .secondary_keys
         .iter()
-        .map(|key| key_matches_with_options(scan_text, key, options))
+        .map(|key| apply_macros(key, macro_context))
+        .map(|key| key_matches_with_options(scan_text, &key, options))
         .collect();
     match normalize_selective_logic(&entry.selective_logic) {
         "and_all" => matches.iter().all(|hit| *hit),
@@ -832,10 +853,12 @@ fn build_history(rows: Vec<MessageRow>) -> Vec<HistoryMessage> {
 fn apply_prompt_regex_to_history(
     history: &mut [HistoryMessage],
     pipeline: &PipelineConfig,
+    macro_context: &st_macro_engine::MacroContext,
     model: &str,
     debug: &mut Vec<RegexMutationDebug>,
 ) -> Result<(), String> {
     for message in history.iter_mut() {
+        message.content = apply_macros(&message.content, macro_context);
         let target = role_regex_target(&message.role);
         message.content = apply_prompt_regex_to_text(
             std::mem::take(&mut message.content),
@@ -868,8 +891,14 @@ fn apply_prompt_regex_to_text(
             continue;
         }
 
-        let regex = Regex::new(&mutator.pattern)
-            .map_err(|e| format!("Invalid regex mutator '{}': {}", mutator.id, e))?;
+        let regex_pattern = normalize_prompt_regex_pattern(&mutator.pattern, &mutator.flags);
+        let regex = match Regex::new(&regex_pattern) {
+            Ok(regex) => regex,
+            Err(e) => {
+                log::warn!("Invalid regex mutator '{}': {}", mutator.id, e);
+                continue;
+            }
+        };
         let before = output.clone();
         let after = regex
             .replace_all(&output, mutator.replacement.as_str())
@@ -916,6 +945,21 @@ fn mutator_applies(
     let start = mutator.depth_range.first().copied().unwrap_or(0);
     let end = mutator.depth_range.get(1).copied().unwrap_or(usize::MAX);
     depth >= start && depth <= end
+}
+
+fn normalize_prompt_regex_pattern(pattern: &str, flags: &str) -> String {
+    let (body, slash_flags) = parse_slash_regex(pattern).unwrap_or((pattern, ""));
+    let mut inline_flags = String::new();
+    for ch in slash_flags.chars().chain(flags.chars()) {
+        if matches!(ch, 'i' | 'm' | 's' | 'x') && !inline_flags.contains(ch) {
+            inline_flags.push(ch);
+        }
+    }
+    if inline_flags.is_empty() {
+        body.to_string()
+    } else {
+        format!("(?{}:{})", inline_flags, body)
+    }
 }
 
 fn normalize_regex_placement(mutator: &RegexMutator) -> &'static str {
@@ -1126,20 +1170,20 @@ fn key_matches_with_options(query: &str, key: &str, options: WorldMatchOptions) 
 
     if let Some(pattern) = key.strip_prefix("re:") {
         return compile_st_regex(pattern, options.case_sensitive)
-            .map(|regex| regex.is_match(query))
+            .map(|regex| regex.is_match(query).unwrap_or(false))
             .unwrap_or(false);
     }
 
     if key.starts_with('/') && key.ends_with('/') && key.len() > 2 {
         return compile_st_regex(&key[1..key.len() - 1], options.case_sensitive)
-            .map(|regex| regex.is_match(query))
+            .map(|regex| regex.is_match(query).unwrap_or(false))
             .unwrap_or(false);
     }
 
     if let Some((pattern, flags)) = parse_slash_regex(key) {
         let case_sensitive = options.case_sensitive && !flags.contains('i');
         return compile_st_regex(pattern, case_sensitive)
-            .map(|regex| regex.is_match(query))
+            .map(|regex| regex.is_match(query).unwrap_or(false))
             .unwrap_or(false);
     }
 
@@ -1147,17 +1191,35 @@ fn key_matches_with_options(query: &str, key: &str, options: WorldMatchOptions) 
 }
 
 fn parse_slash_regex(key: &str) -> Option<(&str, &str)> {
+    let key = key.trim();
     if !key.starts_with('/') {
         return None;
     }
-    let last = key.rfind('/')?;
-    if last == 0 {
-        return None;
+    for idx in (1..key.len()).rev() {
+        if key.as_bytes()[idx] != b'/' || slash_is_escaped(key, idx) {
+            continue;
+        }
+        let flags = &key[idx + 1..];
+        if flags.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            return Some((&key[1..idx], flags));
+        }
     }
-    Some((&key[1..last], &key[last + 1..]))
+    None
 }
 
-fn compile_st_regex(pattern: &str, case_sensitive: bool) -> Result<Regex, regex::Error> {
+fn slash_is_escaped(text: &str, slash_idx: usize) -> bool {
+    let mut count = 0usize;
+    for byte in text.as_bytes()[..slash_idx].iter().rev() {
+        if *byte == b'\\' {
+            count += 1;
+        } else {
+            break;
+        }
+    }
+    count % 2 == 1
+}
+
+fn compile_st_regex(pattern: &str, case_sensitive: bool) -> Result<Regex, fancy_regex::Error> {
     if case_sensitive {
         Regex::new(pattern)
     } else {
@@ -1310,6 +1372,16 @@ mod tests {
         }
     }
 
+    fn macro_ctx() -> st_macro_engine::MacroContext {
+        st_macro_engine::MacroContext {
+            user_name: "Alice".to_string(),
+            char_name: "Soyo".to_string(),
+            input: "hello".to_string(),
+            last_message_id: None,
+            variables: HashMap::new(),
+        }
+    }
+
     #[test]
     fn regex_mutator_applies_by_depth() {
         let mut history = vec![history_msg(
@@ -1337,7 +1409,8 @@ mod tests {
         };
 
         let mut debug = Vec::new();
-        apply_prompt_regex_to_history(&mut history, &pipeline, "gpt-4", &mut debug).unwrap();
+        apply_prompt_regex_to_history(&mut history, &pipeline, &macro_ctx(), "gpt-4", &mut debug)
+            .unwrap();
         assert_eq!(history[0].content, "<zongjie>short</zongjie>");
         assert_eq!(debug.len(), 1);
     }
@@ -1458,6 +1531,11 @@ mod tests {
             r"/alpha\s+\d+/i",
             loose
         ));
+        assert!(key_matches_with_options(
+            "【开始】",
+            r"/(?<=【)开始(?=】)/",
+            loose
+        ));
 
         let strict = WorldMatchOptions {
             case_sensitive: true,
@@ -1479,16 +1557,140 @@ mod tests {
         };
 
         entry.selective_logic = "and_any".to_string();
-        assert!(secondary_keys_pass(&entry, "alpha beta", options));
+        assert!(secondary_keys_pass(
+            &entry,
+            "alpha beta",
+            options,
+            &macro_ctx()
+        ));
         entry.selective_logic = "and_all".to_string();
-        assert!(!secondary_keys_pass(&entry, "alpha beta", options));
-        assert!(secondary_keys_pass(&entry, "alpha beta gamma", options));
+        assert!(!secondary_keys_pass(
+            &entry,
+            "alpha beta",
+            options,
+            &macro_ctx()
+        ));
+        assert!(secondary_keys_pass(
+            &entry,
+            "alpha beta gamma",
+            options,
+            &macro_ctx()
+        ));
         entry.selective_logic = "not_any".to_string();
-        assert!(!secondary_keys_pass(&entry, "alpha beta", options));
-        assert!(secondary_keys_pass(&entry, "alpha delta", options));
+        assert!(!secondary_keys_pass(
+            &entry,
+            "alpha beta",
+            options,
+            &macro_ctx()
+        ));
+        assert!(secondary_keys_pass(
+            &entry,
+            "alpha delta",
+            options,
+            &macro_ctx()
+        ));
         entry.selective_logic = "not_all".to_string();
-        assert!(secondary_keys_pass(&entry, "alpha beta", options));
-        assert!(!secondary_keys_pass(&entry, "alpha beta gamma", options));
+        assert!(secondary_keys_pass(
+            &entry,
+            "alpha beta",
+            options,
+            &macro_ctx()
+        ));
+        assert!(!secondary_keys_pass(
+            &entry,
+            "alpha beta gamma",
+            options,
+            &macro_ctx()
+        ));
+    }
+
+    #[test]
+    fn invalid_prompt_regex_is_skipped_but_lookaround_works() {
+        let pipeline = PipelineConfig {
+            regex_mutators: vec![
+                RegexMutator {
+                    id: "bad".to_string(),
+                    enabled: true,
+                    placement: Some("prompt".to_string()),
+                    target: "history".to_string(),
+                    depth_range: Vec::new(),
+                    pattern: "(".to_string(),
+                    replacement: "bad".to_string(),
+                    flags: String::new(),
+                    sample: String::new(),
+                    description: String::new(),
+                    markdown_only: false,
+                    prompt_only: false,
+                    run_on_edit: false,
+                },
+                RegexMutator {
+                    id: "start".to_string(),
+                    enabled: true,
+                    placement: Some("prompt".to_string()),
+                    target: "history".to_string(),
+                    depth_range: Vec::new(),
+                    pattern: "(?<=【)开始(?=】)".to_string(),
+                    replacement: "进入剧情".to_string(),
+                    flags: String::new(),
+                    sample: String::new(),
+                    description: String::new(),
+                    markdown_only: false,
+                    prompt_only: false,
+                    run_on_edit: false,
+                },
+            ],
+            ..PipelineConfig::default()
+        };
+        let mut debug = Vec::new();
+        let output = apply_prompt_regex_to_text(
+            "【开始】".to_string(),
+            &pipeline,
+            "user_input",
+            0,
+            "user",
+            None,
+            "gpt-4",
+            &mut debug,
+        )
+        .unwrap();
+        assert_eq!(output, "【进入剧情】");
+        assert_eq!(debug.len(), 1);
+    }
+
+    #[test]
+    fn prompt_regex_accepts_sillytavern_slash_pattern_and_flags() {
+        let pipeline = PipelineConfig {
+            regex_mutators: vec![RegexMutator {
+                id: "strip_gui".to_string(),
+                enabled: true,
+                placement: Some("prompt".to_string()),
+                target: "bot_output".to_string(),
+                depth_range: Vec::new(),
+                pattern: r"/<Gui>[\s\S]*?<\/Gui>/g".to_string(),
+                replacement: "".to_string(),
+                flags: "gs".to_string(),
+                sample: String::new(),
+                description: String::new(),
+                markdown_only: false,
+                prompt_only: true,
+                run_on_edit: false,
+            }],
+            ..PipelineConfig::default()
+        };
+        let mut debug = Vec::new();
+        let output = apply_prompt_regex_to_text(
+            "keep\n<Gui>hidden\nhtml</Gui>\nkeep2".to_string(),
+            &pipeline,
+            "bot_output",
+            0,
+            "assistant",
+            None,
+            "gpt-4",
+            &mut debug,
+        )
+        .unwrap();
+        assert_eq!(output, "keep\n\nkeep2");
+        assert_eq!(debug.len(), 1);
     }
 
     #[test]
@@ -1559,6 +1761,7 @@ mod tests {
             &[first.clone(), second.clone()],
             "alpha",
             &strategy,
+            &macro_ctx(),
             4_000,
             "gpt-4",
             0.75,
@@ -1579,6 +1782,7 @@ mod tests {
             &[blocked, second],
             "alpha",
             &strategy,
+            &macro_ctx(),
             4_000,
             "gpt-4",
             0.75,
@@ -1586,6 +1790,43 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.iter().filter(|item| item.included).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn world_recursion_appends_to_original_scan_pool_and_expands_macro_keys() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let repo = SqliteRepo::new(pool);
+        let strategy = ContextStrategy {
+            world_budget_tokens: Some(1_000),
+            ..ContextStrategy::default()
+        };
+        let first = world_entry("a", vec!["alpha"], "beta appears here");
+        let mut second = world_entry("b", vec!["beta"], "needs alpha and beta");
+        second.selective = true;
+        second.secondary_keys = vec!["alpha".to_string()];
+        let macro_key = world_entry("c", vec!["{{char}}"], "macro key lore");
+
+        let result = trigger_world_entries(
+            &repo,
+            "cart",
+            &[first, second, macro_key],
+            "alpha Soyo",
+            &strategy,
+            &macro_ctx(),
+            4_000,
+            "gpt-4",
+            0.75,
+        )
+        .await
+        .unwrap();
+
+        assert!(result
+            .iter()
+            .any(|item| item.entry.id.as_deref() == Some("b")
+                && item.trigger.starts_with("recursive:")));
+        assert!(result
+            .iter()
+            .any(|item| item.entry.id.as_deref() == Some("c")));
     }
 
     #[tokio::test]
@@ -1609,6 +1850,7 @@ mod tests {
             &[disabled, never, delayed],
             "alpha",
             &strategy,
+            &macro_ctx(),
             4_000,
             "gpt-4",
             0.75,

@@ -98,6 +98,10 @@ pub async fn open_cartridge(
         "tavern://localhost/cartridge/{}/{}",
         cartridge_id, cartridge.entry_file
     );
+    let cartridge_dir = PathBuf::from(&cartridge.directory_path);
+    if let Err(e) = package_service::refresh_sillytavern_classic_runtime(&cartridge_dir) {
+        log::warn!("failed to refresh SillyTavern classic runtime: {}", e);
+    }
 
     WebviewWindowBuilder::new(
         &app,
