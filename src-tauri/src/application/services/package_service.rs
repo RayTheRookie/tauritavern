@@ -5,7 +5,6 @@ use crate::application::dto::{
 use crate::application::services::prompt_engine;
 use crate::infrastructure::database::{CartridgeRow, SqliteRepo};
 use crate::infrastructure::fs;
-use base64::Engine;
 use serde_json::Value;
 use std::path::Path;
 use uuid::Uuid;
@@ -16,8 +15,9 @@ pub async fn import_cartridge(
     file_path: &str,
     data_dir: &Path,
 ) -> Result<CartridgeInfo, String> {
-    if file_path.to_ascii_lowercase().ends_with(".png") {
-        return import_sillytavern_png(repo, file_path, data_dir).await;
+    let lower_path = file_path.to_ascii_lowercase();
+    if lower_path.ends_with(".png") || lower_path.ends_with(".webp") {
+        return import_sillytavern_card_image(repo, file_path, data_dir).await;
     }
 
     let file = std::fs::File::open(file_path).map_err(|e| format!("Failed to open file: {}", e))?;
@@ -131,14 +131,16 @@ fn copy_sdk_to_cartridge(cartridge_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn import_sillytavern_png(
+async fn import_sillytavern_card_image(
     repo: &SqliteRepo,
     file_path: &str,
     data_dir: &Path,
 ) -> Result<CartridgeInfo, String> {
-    let png_bytes =
-        std::fs::read(file_path).map_err(|e| format!("Failed to read PNG card: {}", e))?;
-    let card_json = extract_sillytavern_json_from_png(&png_bytes)?;
+    let image_bytes =
+        std::fs::read(file_path).map_err(|e| format!("Failed to read ST card image: {}", e))?;
+    let parsed_card = fs::parse_sillytavern_card_image(&image_bytes)?;
+    let avatar_path = format!("assets/avatar.{}", parsed_card.avatar_extension());
+    let card_json = parsed_card.raw_json;
     let data = card_json.get("data").unwrap_or(&card_json);
 
     let name = get_string(data, "name")
@@ -176,9 +178,15 @@ async fn import_sillytavern_png(
     std::fs::create_dir_all(dest_dir.join("ui"))
         .map_err(|e| format!("Failed to create UI directory: {}", e))?;
 
-    std::fs::write(dest_dir.join("assets").join("avatar.png"), &png_bytes)
-        .map_err(|e| format!("Failed to copy avatar PNG: {}", e))?;
+    std::fs::write(dest_dir.join(&avatar_path), &parsed_card.avatar_bytes)
+        .map_err(|e| format!("Failed to copy avatar image: {}", e))?;
     fs::save_json(&dest_dir.join("sillytavern_card.json"), &card_json)?;
+    if let Some(version_hint) = parsed_card.version_hint.as_deref() {
+        log::debug!(
+            "Imported SillyTavern card with version hint: {}",
+            version_hint
+        );
+    }
 
     let manifest = Manifest {
         name: name.clone(),
@@ -190,7 +198,7 @@ async fn import_sillytavern_png(
         } else {
             creator_notes.clone()
         },
-        cover_image: "assets/avatar.png".to_string(),
+        cover_image: avatar_path.clone(),
     };
 
     let mut prompt_entries = default_prompt_entries();
@@ -249,6 +257,7 @@ async fn import_sillytavern_png(
             mes_example,
             creator_notes,
             alternate_greetings,
+            avatar_path: avatar_path.clone(),
         },
     )?;
     copy_sdk_to_cartridge(&dest_dir)?;
@@ -276,102 +285,9 @@ async fn import_sillytavern_png(
         author: manifest.author,
         description: manifest.description,
         version: manifest.version,
-        cover_image: fs::encode_data_uri(&png_bytes, "assets/avatar.png"),
+        cover_image: fs::encode_data_uri(&parsed_card.avatar_bytes, &avatar_path),
         installed_at: now,
     })
-}
-
-fn extract_sillytavern_json_from_png(bytes: &[u8]) -> Result<Value, String> {
-    const PNG_SIG: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-    if bytes.len() < 8 || &bytes[..8] != PNG_SIG {
-        return Err("Not a PNG file".to_string());
-    }
-
-    let mut offset = 8usize;
-    let mut text_values = Vec::new();
-    while offset + 12 <= bytes.len() {
-        let length = u32::from_be_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .map_err(|_| "Invalid PNG chunk length".to_string())?,
-        ) as usize;
-        offset += 4;
-        if offset + 4 + length + 4 > bytes.len() {
-            return Err("Truncated PNG chunk".to_string());
-        }
-        let chunk_type = &bytes[offset..offset + 4];
-        offset += 4;
-        let data = &bytes[offset..offset + length];
-        offset += length + 4;
-
-        if chunk_type == b"tEXt" {
-            if let Some((keyword, text)) = split_png_text(data) {
-                if keyword.eq_ignore_ascii_case("chara") {
-                    text_values.insert(0, text);
-                } else {
-                    text_values.push(text);
-                }
-            }
-        } else if chunk_type == b"iTXt" {
-            if let Some((keyword, text)) = split_png_itxt(data) {
-                if keyword.eq_ignore_ascii_case("chara") {
-                    text_values.insert(0, text);
-                } else {
-                    text_values.push(text);
-                }
-            }
-        }
-
-        if chunk_type == b"IEND" {
-            break;
-        }
-    }
-
-    for value in text_values {
-        if let Ok(json) = parse_card_json_text(&value) {
-            return Ok(json);
-        }
-    }
-    Err("No SillyTavern character metadata found in PNG tEXt/iTXt chunks".to_string())
-}
-
-fn split_png_text(data: &[u8]) -> Option<(String, String)> {
-    let nul = data.iter().position(|b| *b == 0)?;
-    let keyword = String::from_utf8_lossy(&data[..nul]).to_string();
-    let text = String::from_utf8_lossy(&data[nul + 1..]).to_string();
-    Some((keyword, text))
-}
-
-fn split_png_itxt(data: &[u8]) -> Option<(String, String)> {
-    let keyword_end = data.iter().position(|b| *b == 0)?;
-    let keyword = String::from_utf8_lossy(&data[..keyword_end]).to_string();
-    let mut idx = keyword_end + 1;
-    if idx + 2 > data.len() {
-        return None;
-    }
-    let compression_flag = data[idx];
-    idx += 2; // flag + method
-    let lang_end = data[idx..].iter().position(|b| *b == 0)? + idx;
-    idx = lang_end + 1;
-    let translated_end = data[idx..].iter().position(|b| *b == 0)? + idx;
-    idx = translated_end + 1;
-    if compression_flag != 0 {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&data[idx..]).to_string();
-    Some((keyword, text))
-}
-
-fn parse_card_json_text(text: &str) -> Result<Value, String> {
-    let trimmed = text.trim();
-    if trimmed.starts_with('{') {
-        return serde_json::from_str(trimmed).map_err(|e| e.to_string());
-    }
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(trimmed)
-        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(trimmed))
-        .map_err(|e| e.to_string())?;
-    serde_json::from_slice(&decoded).map_err(|e| e.to_string())
 }
 
 fn build_classic_system_prompt(
@@ -737,6 +653,12 @@ struct ClassicCardData {
     mes_example: String,
     creator_notes: String,
     alternate_greetings: Vec<String>,
+    #[serde(default = "default_avatar_path")]
+    avatar_path: String,
+}
+
+fn default_avatar_path() -> String {
+    "assets/avatar.png".to_string()
 }
 
 pub fn refresh_sillytavern_classic_runtime(dest_dir: &Path) -> Result<(), String> {
@@ -1387,11 +1309,12 @@ function splitDisplayParts(content) {
 
 async function loadAvatar() {
   const avatar = el("avatar");
+  const avatarPath = card?.avatar_path || "assets/avatar.png";
   try {
-    avatar.src = await SDK.loadAsset("assets/avatar.png");
+    avatar.src = await SDK.loadAsset(avatarPath);
   } catch (error) {
     console.warn("Avatar data URI failed, falling back to tavern URL", error);
-    avatar.src = SDK.getAssetUrl("assets/avatar.png");
+    avatar.src = SDK.getAssetUrl(avatarPath);
   }
 }
 

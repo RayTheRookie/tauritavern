@@ -53,6 +53,9 @@
   }
 
   function getCartridgeIdFromUrl() {
+    if (typeof window !== "undefined" && window.__TAURI_TAVERN_BRIDGE__?.cartridgeId) {
+      return window.__TAURI_TAVERN_BRIDGE__.cartridgeId;
+    }
     const href = window.location.href;
     const match = href.match(/cartridge\/([^/]+)/);
     return match ? match[1] : null;

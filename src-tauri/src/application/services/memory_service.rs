@@ -2,42 +2,55 @@ use crate::application::dto::ChatMessage;
 
 /// Token counting strategies for different model families.
 pub fn count_tokens(text: &str, model: &str) -> usize {
-    let model_lower = model.to_lowercase();
+    match TokenCountingStrategy::for_model(model) {
+        TokenCountingStrategy::Tiktoken(model_name) => tiktoken_count(text, model_name),
+        TokenCountingStrategy::ConservativeBpeLike => conservative_bpe_like_count(text),
+        TokenCountingStrategy::RedundantEstimate => redundant_estimate_count(text),
+    }
+}
 
+enum TokenCountingStrategy<'a> {
+    Tiktoken(&'a str),
+    ConservativeBpeLike,
+    RedundantEstimate,
+}
+
+impl<'a> TokenCountingStrategy<'a> {
+    fn for_model(model: &'a str) -> Self {
+        let model_lower = model.to_lowercase();
+
+        if is_openai_model(&model_lower) {
+            return Self::Tiktoken(model);
+        }
+
+        if is_bpe_family_model(&model_lower) {
+            return Self::ConservativeBpeLike;
+        }
+
+        Self::RedundantEstimate
+    }
+}
+
+fn is_openai_model(model_lower: &str) -> bool {
     if model_lower.starts_with("gpt-")
         || model_lower.starts_with("o1")
         || model_lower.starts_with("o3")
         || model_lower.starts_with("o4")
         || model_lower.contains("text-embedding")
     {
-        return tiktoken_count(text, &model_lower);
+        return true;
     }
 
-    if model_lower.contains("claude") {
-        return char_based_count(text);
-    }
+    false
+}
 
-    if model_lower.starts_with("gemini-") || model_lower.starts_with("gemma") {
-        return char_based_count(text);
-    }
-
-    if model_lower.starts_with("glm-") || model_lower.starts_with("chatglm") {
-        return char_based_count(text);
-    }
-
-    if model_lower.starts_with("deepseek") {
-        return char_based_count(text);
-    }
-
-    if model_lower.starts_with("qwen") {
-        return char_based_count(text);
-    }
-
-    if model_lower.starts_with("grok") {
-        return char_based_count(text);
-    }
-
-    tiktoken_count(text, "gpt-4")
+fn is_bpe_family_model(model_lower: &str) -> bool {
+    model_lower.starts_with("llama")
+        || model_lower.contains("llama-")
+        || model_lower.starts_with("qwen")
+        || model_lower.contains("qwen-")
+        || model_lower.starts_with("mistral")
+        || model_lower.contains("mistral-")
 }
 
 fn tiktoken_count(text: &str, model: &str) -> usize {
@@ -48,8 +61,79 @@ fn tiktoken_count(text: &str, model: &str) -> usize {
     bpe.encode_with_special_tokens(text).len()
 }
 
-fn char_based_count(text: &str) -> usize {
-    (text.chars().count() as f64 / 3.0).ceil() as usize
+fn redundant_estimate_count(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
+    // Claude and unknown model families deliberately use a safety margin until
+    // provider-specific tokenizers can be added without increasing build risk.
+    let chars = text.chars().count();
+    let bytes = text.len();
+    ceil_div(chars, 2).max(ceil_div(bytes, 4)).saturating_add(8)
+}
+
+fn conservative_bpe_like_count(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+
+    // TODO: Add an optional tokenizer-backed implementation behind a feature
+    // flag once Windows build impact is verified. This facade keeps the call
+    // site stable for Llama/Qwen/Mistral families.
+    let mut tokens = 0usize;
+    let mut ascii_run_len = 0usize;
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            ascii_run_len += 1;
+            continue;
+        }
+
+        tokens += ascii_run_tokens(ascii_run_len);
+        ascii_run_len = 0;
+
+        if ch.is_whitespace() {
+            continue;
+        }
+
+        if is_cjk_char(ch) {
+            tokens += 1;
+        } else if ch.is_ascii_punctuation() {
+            tokens += 1;
+        } else {
+            tokens += ceil_div(ch.len_utf8(), 2);
+        }
+    }
+
+    tokens += ascii_run_tokens(ascii_run_len);
+    ceil_div(tokens.saturating_mul(6), 5).saturating_add(4)
+}
+
+fn ascii_run_tokens(run_len: usize) -> usize {
+    if run_len == 0 {
+        0
+    } else {
+        ceil_div(run_len, 4)
+    }
+}
+
+fn ceil_div(value: usize, divisor: usize) -> usize {
+    value.div_ceil(divisor)
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x2A6DF
+            | 0x2A700..=0x2B73F
+            | 0x2B740..=0x2B81F
+            | 0x2B820..=0x2CEAF
+            | 0x2CEB0..=0x2EBEF
+    )
 }
 
 #[allow(dead_code)]
@@ -214,14 +298,48 @@ mod tests {
     }
 
     #[test]
-    fn test_char_count_fallback() {
+    fn test_claude_model_uses_redundant_estimate() {
         let tokens = count_tokens("Hello world", "claude-sonnet-4-6");
-        assert!(tokens > 0);
+        assert!(tokens >= 13);
     }
 
     #[test]
     fn test_gpt_model_uses_tiktoken() {
         let tokens = count_tokens("Hello world", "gpt-4o");
         assert!(tokens > 0 && tokens <= 20);
+    }
+
+    #[test]
+    fn test_llama_model_uses_conservative_bpe_like_fallback() {
+        let text = "Hello world, this is a local Llama memory test.";
+        let tokens = count_tokens(text, "llama-3.1-8b");
+
+        assert!(tokens > 8);
+        assert!(tokens < text.chars().count());
+    }
+
+    #[test]
+    fn test_qwen_and_mistral_use_conservative_bpe_like_fallback() {
+        let text = "Memory retrieval with mixed 中文 context.";
+
+        assert_eq!(
+            count_tokens(text, "qwen2.5-32b"),
+            count_tokens(text, "mistral-large-latest")
+        );
+    }
+
+    #[test]
+    fn test_mixed_chinese_long_text_is_counted_conservatively() {
+        let text = "角色记忆包含中文、English names, numbers 12345, and punctuation! ".repeat(120);
+
+        let gpt_tokens = count_tokens(&text, "gpt-4o");
+        let claude_tokens = count_tokens(&text, "claude-3-5-sonnet");
+        let llama_tokens = count_tokens(&text, "llama-3.1-70b");
+        let unknown_tokens = count_tokens(&text, "some-new-provider-model");
+
+        assert!(gpt_tokens > 0);
+        assert!(claude_tokens > gpt_tokens / 2);
+        assert!(llama_tokens > gpt_tokens / 2);
+        assert!(unknown_tokens >= claude_tokens);
     }
 }

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen as listenEvent } from "@tauri-apps/api/event";
 
 // ── State ──────────────────────────────────
 
@@ -58,6 +59,27 @@ const previewSidebar = document.getElementById("preview-sidebar");
 const leftResizer = document.getElementById("left-resizer");
 const previewResizer = document.getElementById("preview-resizer");
 
+const PREVIEW_BRIDGE_ALLOWED_COMMANDS = new Set([
+  "send_chat",
+  "execute_st_command",
+  "dry_run_prompt_pipeline",
+  "create_chat",
+  "list_chats",
+  "get_messages",
+  "delete_chat",
+  "set_chat_variable",
+  "get_chat_variable",
+  "list_chat_variables",
+  "delete_chat_variable",
+  "load_asset",
+  "get_preset",
+  "match_world_info",
+]);
+const PREVIEW_BRIDGE_ALLOWED_EVENTS = new Set(["chat-chunk"]);
+const PREVIEW_SANDBOX = "allow-scripts allow-forms allow-modals";
+let previewBridgeToken = "";
+const previewEventUnlisteners = new Map();
+
 // ── Init ───────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -94,6 +116,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   window.addEventListener("beforeunload", () => {
     if (state.autoSaveTimer) clearTimeout(state.autoSaveTimer);
+    clearPreviewEventListeners();
     saveAll();
   });
 });
@@ -312,6 +335,10 @@ async function sendAgentMessage() {
 }
 
 function setupWorkbenchLayout() {
+  if (previewFrame) {
+    previewFrame.setAttribute("sandbox", PREVIEW_SANDBOX);
+  }
+  window.addEventListener("message", handlePreviewBridgeMessage);
   previewRefresh?.addEventListener("click", () => schedulePreviewRefresh(0));
   previewFocusCode?.addEventListener("click", () => switchTab("ui-code"));
   setupHorizontalResize(leftResizer, leftSidebar, "leftSidebarWidth", {
@@ -444,8 +471,10 @@ function schedulePreviewRefresh(delay = 120) {
 function refreshCreatorPreview() {
   if (!previewFrame || !state.workbenchId) return;
   try {
+    clearPreviewEventListeners();
+    previewBridgeToken = createPreviewBridgeToken();
     previewFrame.srcdoc = buildPreviewDocument();
-    if (previewStatus) previewStatus.textContent = "Updated " + new Date().toLocaleTimeString();
+    if (previewStatus) previewStatus.textContent = "SDK sandbox · " + new Date().toLocaleTimeString();
   } catch (e) {
     if (previewStatus) previewStatus.textContent = "Preview error";
     showToast("Preview failed: " + e, "error");
@@ -464,7 +493,7 @@ function buildPreviewDocument() {
     .replace(/<script\b[^>]*src=["'](?:\.\/)?script\.js["'][^>]*>\s*<\/script>/gi, "")
     .replace(/<script\b[^>]*src=["']\.\.\/tauri-tavern-sdk\.js["'][^>]*>\s*<\/script>/gi, "");
 
-  const headInject = `<base href="${baseHref}"><script src="${sdkSrc}"><\/script><style data-live-style>${css}</style>`;
+  const headInject = `<base href="${baseHref}"><script>${buildPreviewBridgeScript()}<\/script><script src="${sdkSrc}"><\/script><style data-live-style>${css}</style>`;
   const bodyInject = `<script data-live-script>${js.replace(/<\/script/gi, "<\\/script")}<\/script>`;
 
   if (/<head[^>]*>/i.test(html)) {
@@ -481,6 +510,186 @@ function buildPreviewDocument() {
     html += bodyInject;
   }
   return html;
+}
+
+function createPreviewBridgeToken() {
+  const random = window.crypto?.getRandomValues
+    ? Array.from(window.crypto.getRandomValues(new Uint32Array(2)), n => n.toString(16)).join("")
+    : String(Date.now());
+  return `creator-preview-${random}`;
+}
+
+function buildPreviewBridgeScript() {
+  const token = JSON.stringify(previewBridgeToken);
+  const cartridgeId = JSON.stringify(state.workbenchId);
+  return `
+(() => {
+  const previewToken = ${token};
+  const cartridgeId = ${cartridgeId};
+  const pending = new Map();
+  const listeners = new Map();
+  let nextId = 1;
+  let nextListenerId = 1;
+
+  window.addEventListener("message", event => {
+    const message = event.data || {};
+    if (message.source === "tauri-tavern-creator-event" && message.previewToken === previewToken) {
+      const handler = listeners.get(message.listenerId);
+      if (handler) handler(message.event);
+      return;
+    }
+    if (message.source !== "tauri-tavern-creator" || message.previewToken !== previewToken) return;
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    if (message.ok) {
+      request.resolve(message.value);
+    } else {
+      request.reject(new Error(message.error || "Preview bridge request failed."));
+    }
+  });
+
+  function request(type, payload) {
+    const id = String(nextId++);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      window.parent.postMessage({
+        source: "tauri-tavern-preview",
+        previewToken,
+        id,
+        type,
+        ...payload
+      }, "*");
+    });
+  }
+
+  const bridge = Object.freeze({
+    invoke(command, args) {
+      return request("invoke", { command, args: args || {} });
+    },
+    listen(event, handler) {
+      const listenerId = String(nextListenerId++);
+      listeners.set(listenerId, typeof handler === "function" ? handler : () => {});
+      return request("listen", { event, listenerId }).then(() => {
+        return () => {
+          listeners.delete(listenerId);
+          request("unlisten", { listenerId }).catch(console.warn);
+        };
+      }).catch(error => {
+        listeners.delete(listenerId);
+        throw error;
+      });
+    },
+    cartridgeId
+  });
+
+  Object.defineProperty(window, "__TAURI_TAVERN_BRIDGE__", {
+    value: bridge,
+    enumerable: false,
+    configurable: false,
+    writable: false
+  });
+  try { delete window.__TAURI__; } catch (_) {}
+  try { delete window.__TAURI_INTERNALS__; } catch (_) {}
+  try {
+    Object.defineProperty(window, "__TAURI__", { value: undefined, configurable: false, writable: false });
+  } catch (_) {}
+  try {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: undefined, configurable: false, writable: false });
+  } catch (_) {}
+})();
+`.replace(/<\/script/gi, "<\\/script");
+}
+
+async function handlePreviewBridgeMessage(event) {
+  if (!previewFrame || event.source !== previewFrame.contentWindow) return;
+  const message = event.data || {};
+  if (message.source !== "tauri-tavern-preview" || message.previewToken !== previewBridgeToken) return;
+
+  try {
+    if (message.type === "invoke") {
+      const command = String(message.command || "");
+      if (!PREVIEW_BRIDGE_ALLOWED_COMMANDS.has(command)) {
+        throw new Error(`Command '${command}' is not exposed to the Creator preview sandbox.`);
+      }
+      const value = await invoke(command, scopedPreviewArgs(command, message.args));
+      postPreviewBridgeResult(message.id, true, value);
+      return;
+    }
+
+    if (message.type === "listen") {
+      const eventName = String(message.event || "");
+      if (!PREVIEW_BRIDGE_ALLOWED_EVENTS.has(eventName)) {
+        throw new Error(`Event '${eventName}' is not exposed to the Creator preview sandbox.`);
+      }
+      const listenerId = String(message.listenerId || "");
+      if (!listenerId) {
+        throw new Error("Preview event listener id is required.");
+      }
+      clearPreviewEventListener(listenerId);
+      const unlisten = await listenEvent(eventName, event => {
+        previewFrame?.contentWindow?.postMessage({
+          source: "tauri-tavern-creator-event",
+          previewToken: previewBridgeToken,
+          listenerId,
+          event,
+        }, "*");
+      });
+      previewEventUnlisteners.set(listenerId, unlisten);
+      postPreviewBridgeResult(message.id, true, true);
+      return;
+    }
+
+    if (message.type === "unlisten") {
+      clearPreviewEventListener(String(message.listenerId || ""));
+      postPreviewBridgeResult(message.id, true, true);
+      return;
+    }
+
+    throw new Error("Unknown preview bridge request.");
+  } catch (e) {
+    postPreviewBridgeResult(message.id, false, null, String(e?.message || e));
+  }
+}
+
+function clearPreviewEventListener(listenerId) {
+  const unlisten = previewEventUnlisteners.get(listenerId);
+  if (!unlisten) return;
+  previewEventUnlisteners.delete(listenerId);
+  try {
+    unlisten();
+  } catch (e) {
+    console.warn("Failed to clear preview event listener", e);
+  }
+}
+
+function clearPreviewEventListeners() {
+  for (const listenerId of Array.from(previewEventUnlisteners.keys())) {
+    clearPreviewEventListener(listenerId);
+  }
+}
+
+function scopedPreviewArgs(command, args) {
+  const scoped = { ...(args || {}) };
+  if (!state.workbenchId) return scoped;
+  if (!scoped.cartridgeId) {
+    scoped.cartridgeId = state.workbenchId;
+  }
+  if (scoped.cartridgeId !== state.workbenchId) {
+    throw new Error("Creator preview scope mismatch.");
+  }
+  return scoped;
+}
+
+function postPreviewBridgeResult(id, ok, value, error = "") {
+  previewFrame?.contentWindow?.postMessage({
+    source: "tauri-tavern-creator",
+    previewToken: previewBridgeToken,
+    id,
+    ok,
+    value,
+    error,
+  }, "*");
 }
 
 function appendAgentMessage(role, text) {

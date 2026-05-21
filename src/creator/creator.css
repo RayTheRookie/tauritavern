@@ -623,6 +623,20 @@ body {
   flex-shrink: 0;
 }
 
+.runtime-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(39, 174, 96, 0.45);
+  border-radius: var(--radius-sm);
+  background: rgba(39, 174, 96, 0.12);
+  color: #69d58f;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .code-settings label {
   display: inline-flex;
   align-items: center;

@@ -16,6 +16,7 @@ export function renderUICode(panel) {
           ${isRegexFile(activeCodeFile) ? `<button class="cr-code-tab active" data-file="${activeCodeFile}">${esc(codeFileLabel(activeCodeFile))}</button>` : ""}
         </div>
         <div class="code-settings">
+          <span class="runtime-pill" title="Live preview uses a sandboxed iframe and the TavernSDK postMessage proxy">SDK sandbox</span>
           <label title="Font size"><span>Font</span><input id="code-font-size" type="number" min="10" max="22" value="${settings.fontSize}" /></label>
           <label title="Tab size"><span>Tab</span><input id="code-tab-size" type="number" min="2" max="8" value="${settings.tabSize}" /></label>
           <label class="code-toggle"><input id="code-word-wrap" type="checkbox" ${settings.wordWrap ? "checked" : ""} /> Wrap</label>
@@ -33,6 +34,7 @@ export function renderUICode(panel) {
       <div class="code-statusbar">
         <span id="code-status-file">${activeCodeFile}</span>
         <span id="code-status-position">Ln 1, Col 1</span>
+        <span>Runtime: SDK sandbox</span>
         <span>UTF-8</span>
       </div>
     </div>
